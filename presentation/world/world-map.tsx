@@ -3,13 +3,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { constructibleBuildingTypes, validatePlacement, type PlacementRequest } from "@/world/domain/construction";
 import { buildingAt, buildingDefinitions, footprintOf, type BuildingRotation, type BuildingType } from "@/world/domain/settlement";
-import { chunkOf, type SurfaceCell, type WorldSnapshot } from "@/world/domain/world";
+import { chunkOf, resourceAt, type SurfaceCell, type TerrainType, type WorldSnapshot } from "@/world/domain/world";
 import { toScreen, focusCell, panCamera, pickCell, zoomCamera, type Camera, type Viewport } from "./projection";
 import { drawWorld, type PlacementPreview } from "./render";
 
 const button = "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-amber-200 disabled:opacity-30";
 
 const rotations: readonly BuildingRotation[] = ["north", "east", "south", "west"];
+const terrainNames: Record<TerrainType, string> = {
+  grassland: "Grassland",
+  water: "Water",
+  mountain: "Mountain",
+  forest_ground: "Forest",
+  farmland: "Farmland",
+};
 
 export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -110,13 +117,15 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
     }
   };
   const selectedBuilding = selected ? buildingAt(world, selected.x, selected.y) : undefined;
+  const selectedResource = selected ? resourceAt(world, selected) : undefined;
   const cityLabel = world.settlement ? toScreen({ ...world.settlement.anchor, z: world.settlement.anchor.z + 4 }, camera, viewport) : null;
+  const resourceLabels = world.resourceNodes.map(node => ({ node, point: toScreen({ ...node.anchor, z: node.anchor.z + 2 }, camera, viewport) }));
   const chunk = selected ? chunkOf(selected, world.chunkSize) : null;
 
   return (
     <main className="flex h-dvh min-h-[520px] flex-col overflow-hidden bg-[#101f25] font-sans text-slate-100">
       <header className="z-10 flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#101d23] px-5 py-4 sm:px-7">
-        <div className="flex items-center gap-3"><span className="flex size-9 items-center justify-center rounded-lg border border-amber-200/30 text-xl text-amber-200" aria-hidden="true">◇</span><div><h1 className="text-lg font-semibold tracking-tight">OpenWorld Economy</h1><p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Spatial prototype / Milestone 4</p></div></div>
+        <div className="flex items-center gap-3"><span className="flex size-9 items-center justify-center rounded-lg border border-amber-200/30 text-xl text-amber-200" aria-hidden="true">◇</span><div><h1 className="text-lg font-semibold tracking-tight">OpenWorld Economy</h1><p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Spatial prototype / Milestones 0–4</p></div></div>
         <span className="rounded-full border border-emerald-300/20 bg-emerald-300/5 px-3 py-1.5 text-xs text-emerald-200">{tool === "build" ? "Build tool active" : "Inspect tool"}</span>
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
@@ -181,6 +190,14 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
             <span className="block text-sm font-semibold text-amber-100">{world.settlement.name}</span>
             <span className="text-xs text-slate-300">{world.settlement.population} citizens · Founding camp</span>
           </button>}
+          {camera.zoom >= 0.45 && resourceLabels.map(({ node, point }) => point.x > -100 && point.x < viewport.width + 100 && point.y > 0 && point.y < viewport.height + 80 ? <button
+            key={node.id}
+            className="absolute -translate-x-1/2 -translate-y-full rounded-md border border-white/15 bg-[#102128]/90 px-3 py-1.5 text-left shadow-md"
+            style={{ left: point.x, top: point.y }}
+            onClick={() => setSelected(world.cells[node.anchor.y * world.size + node.anchor.x])}>
+            <span className="block text-xs font-semibold text-slate-100">{node.name}</span>
+            <span className="text-[10px] capitalize text-slate-400">{node.type} deposit</span>
+          </button> : null)}
           <span aria-hidden="true" className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white/50">+</span>
           <div className="absolute bottom-5 left-5 flex items-center gap-2 rounded-xl border border-white/10 bg-[#102128]/95 p-2 shadow-xl">
             <button className={button} aria-label="Zoom out" disabled={camera.zoom <= 0.25} onClick={() => zoom(1 / 1.2)}>−</button>
@@ -197,6 +214,18 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
             <p className="mt-1 text-xs text-slate-400">{world.buildings?.filter(building => building.type === "camp").length} camp · {world.buildings?.filter(building => building.type === "house").length} houses · {world.buildings?.filter(building => building.type === "warehouse").length} warehouse · {world.buildings?.filter(building => building.type === "workshop").length} workshops</p>
             <button className={`${button} mt-3 w-full`} onClick={() => setCamera(current => ({ ...current, focus: focusCell(world.settlement!.anchor), zoom: 2 }))}>Go to settlement</button>
           </section>}
+          <section className="mb-6 border-b border-white/10 pb-5" aria-label="Economic geography">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-emerald-200">Economic geography</p>
+            <div className="mt-3 grid grid-cols-2 gap-2">{world.resourceNodes.map(node => <button key={node.id} className={`${button} px-2 text-left`} onClick={() => {
+              setTool("inspect");
+              setSelected(world.cells[node.anchor.y * world.size + node.anchor.x]);
+              setCamera(current => ({ ...current, focus: focusCell(node.anchor), zoom: Math.max(current.zoom, 1.2) }));
+            }}><span className="block text-xs font-medium">{node.name}</span><span className="mt-1 block text-[10px] capitalize text-slate-400">{node.type} · {node.cellCount} cells</span></button>)}</div>
+            <button className={`${button} mt-2 w-full text-left`} onClick={() => {
+              const farm = world.cells.find(cell => cell.terrain === "farmland");
+              if (farm) { setTool("inspect"); setSelected(farm); setCamera(current => ({ ...current, focus: focusCell(farm), zoom: Math.max(current.zoom, 1.2) })); }
+            }}>View farmland</button>
+          </section>
           <section className="mb-6 border-b border-white/10 pb-5" aria-label="Construction tools">
             <div className="flex items-center justify-between gap-3">
               <div><p className="text-[10px] uppercase tracking-[0.2em] text-amber-200">World tool</p><h2 className="mt-1 text-lg font-semibold">{tool === "build" ? "Place building" : "Inspect"}</h2></div>
@@ -213,13 +242,15 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
             </div>}
           </section>
           <p className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Selected location</p>
-          <h2 className="mt-2 text-xl font-medium">{selectedBuilding ? buildingDefinitions[selectedBuilding.type].name : selected ? (selected.terrain === "water" ? "Water" : selected.terrain === "mountain" ? "Mountain" : selected.z > 1 ? "Hillside" : "Grassland") : "Explore the world"}</h2>
+          <h2 className="mt-2 text-xl font-medium">{selectedBuilding ? buildingDefinitions[selectedBuilding.type].name : selectedResource ? selectedResource.name : selected ? terrainNames[selected.terrain] : "Explore the world"}</h2>
           {selectedBuilding && <p className="mt-2 text-xs leading-5 text-slate-400">{buildingDefinitions[selectedBuilding.type].purpose} Footprint: {footprintOf(selectedBuilding.type, selectedBuilding.rotation).width} × {footprintOf(selectedBuilding.type, selectedBuilding.rotation).depth}. Rotation: {selectedBuilding.rotation}. Settlement: {world.settlement?.name}.</p>}
+          {selectedResource && <div className="mt-3 rounded-lg border border-white/10 bg-black/10 p-3 text-xs text-slate-300"><p className="capitalize">Resource: {selectedResource.type}</p><p className="mt-1">Estimated reserve: {selectedResource.estimatedReserve.toLocaleString("en-US")}</p><p className="mt-1">Region: {selectedResource.cellCount} cells</p><p className="mt-2 text-slate-500">Decorative markers show presence; reserve is stored on this resource node.</p></div>}
+          {selected?.terrain === "farmland" && <p className="mt-2 text-xs leading-5 text-slate-400">Agricultural land use suitable for future crop production. Crop state and output are not simulated yet.</p>}
           <div className="mt-5" aria-live="polite" aria-atomic="true">
             {selected ? <><div className="grid grid-cols-3 gap-2">{(["x", "y", "z"] as const).map(axis => <div key={axis} className="rounded-lg border border-white/10 bg-black/10 p-3"><p className="text-xs uppercase text-slate-400">{axis}</p><p className="mt-1 font-mono text-xl text-amber-100">{selected[axis]}</p></div>)}</div><p className="mt-4 text-xs text-slate-400">Chunk {chunk?.x}, {chunk?.y} · Surface elevation {selected.z}</p></> : <p className="text-sm leading-6 text-slate-400">Select a diamond to inspect its world coordinates. Follow the river, find the coastline, or explore the stepped hills and mountains.</p>}
           </div>
           <button className={`${button} mt-5 w-full`} disabled={!selected} onClick={() => { if (selected) setCamera(current => ({ ...current, focus: focusCell(selected) })); }}>Focus selected tile</button>
-          <div className="mt-7 border-t border-white/10 pt-5"><h3 className="text-xs font-medium text-slate-300">Map layers</h3><label className="mt-4 flex cursor-pointer items-center justify-between text-sm text-slate-400">Tile grid<input type="checkbox" checked={grid} onChange={event => setGrid(event.target.checked)} className="size-4 accent-amber-200" /></label><div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-400"><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#718e6c]" />Grassland</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#2c7187]" />Water</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#92988f]" />Mountain</span></div></div>
+          <div className="mt-7 border-t border-white/10 pt-5"><h3 className="text-xs font-medium text-slate-300">Map layers</h3><label className="mt-4 flex cursor-pointer items-center justify-between text-sm text-slate-400">Tile grid<input type="checkbox" checked={grid} onChange={event => setGrid(event.target.checked)} className="size-4 accent-amber-200" /></label><div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-400"><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#718e6c]" />Grassland</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#2c7187]" />Water</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#92988f]" />Mountain</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#456f4d]" />Forest</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#a39351]" />Farmland</span></div></div>
           <div className="mt-7 border-t border-white/10 pt-5 text-xs leading-6 text-slate-400"><h3 className="mb-2 font-medium text-slate-300">Navigation</h3><p>Drag to pan · Scroll to zoom</p><p>WASD / arrows to pan when map is focused</p><p>Enter to inspect the center · Esc to clear</p></div>
           <p className="mt-7 text-[11px] leading-5 text-slate-500">Construction is authoritative for this running server session. Inventory, costs, persistence, authentication, and population simulation arrive later.</p>
         </aside>
