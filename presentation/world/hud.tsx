@@ -288,7 +288,7 @@ export function BottomHud({
             [
               "Producing sites",
               snapshot
-                ? `${snapshot.sites.filter((site) => site.assignedWorkers > 0 && site.status !== "storage_full").length} / ${snapshot.sites.length}`
+                ? `${snapshot.sites.filter((site) => site.status === "running" || site.status === "worker_shortage").length} / ${snapshot.sites.length}`
                 : "—",
             ],
             [

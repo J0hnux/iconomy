@@ -64,6 +64,13 @@ const primitiveA = {
     right: "#808782",
     mark: "STONE",
   },
+  iron_mine: {
+    height: 1.55,
+    top: "#815e53",
+    left: "#493e3c",
+    right: "#64504b",
+    mark: "IRON",
+  },
 } satisfies BuildingVisualSet;
 
 export const buildingVisualProfiles = {

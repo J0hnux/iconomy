@@ -177,7 +177,7 @@ For the playable-loop check, open Build, choose Farm, and use Find site or inspe
 
 - Working-age population now supplies one finite workforce read model with total, assigned, and unassigned workers plus the number of production buildings experiencing a labor shortage.
 - A shared labor policy calculates `min(1, assigned workers / required workers)` once for every producer type. Farm, Lumber Camp, and Quarry expose the same labor status and efficiency fields instead of implementing separate formulas.
-- Partial staffing now advances production proportionally. A Farm with one of two required workers operates at 50% labor efficiency and completes its four-food batch in 16 seconds; full staffing retains the existing eight-second cycle.
+- Partial staffing now advances production proportionally. A Farm with one of two required workers operates at 50% labor efficiency and completes its four-unit batch in 16 seconds; full staffing retains the existing eight-second cycle.
 - Exact integer remainder carry makes partial work deterministic across timer frequency, Pause, 1×, 2×, 5×, and direct simulation-time jumps. Commodity output remains in complete recipe batches.
 - The existing `set_workers` command uses the shared labor validator. It prevents assignments above a building requirement or above the settlement workforce and continues to replace one building's allocation without double-counting it.
 - The player and economy HUDs show Workforce, Assigned, Available, and Labor shortages. Producer inspection and the company list show assigned/required workers and labor efficiency, with clear Unassigned, Worker shortage, Full staffing, or Storage full consequences.
@@ -187,6 +187,22 @@ For the playable-loop check, open Build, choose Farm, and use Find site or inspe
 `world/domain/labor.ts` owns labor capacity validation, status, efficiency, deterministic work conversion, and aggregate labor snapshots. Production consumes that policy, while `LocalGameSimulation` remains the sole owner of assignment state.
 
 For labor verification, inspect the starting workforce of 6 with 5 assigned and 1 available. Remove one worker from the Farm and confirm it reports 1/2 workers, 50% efficiency, and a worker shortage while continuing to produce at half speed. Release all workers and confirm progress stops. Attempt to assign more than six workers across producers and confirm the command is rejected, then reload and verify the accepted allocation is restored.
+
+## Milestone 15: core dependency-driven production
+
+- A single commodity catalog now defines the first connected economy. Existing save IDs remain stable: `wood` is displayed as Logs, `stone` as Rough Stone, and `food` as Basic Food. Crops, Lumber, Cut Stone, Animal Feed, Livestock, Raw Meat, Cooked Meat, Prepared Meal, Iron Ore, Iron, and Iron Tools extend that catalog without duplicate legacy goods.
+- Production is recipe-driven. Every recipe declares its producer building, consumable warehouse inputs, worker requirement, equipment requirements, duration, output, local storage capacity, and site-storage destination.
+- Primitive Farm, Lumber Camp, Quarry, and Iron Mine recipes can start without consumable or manufactured inputs. A configurable Workshop supplies processing capacity, avoiding a separate subclass for every industry and avoiding bootstrap loops.
+- The supported chains are Forest → Logs → Lumber; Farmland → Crops → Basic Food; Crops → Animal Feed → Livestock → Raw Meat → Cooked Meat; Crops + Cooked Meat → Prepared Meal; Stone Deposit → Rough Stone → Cut Stone; and Iron Deposit → Iron Ore → Iron → Iron Tools.
+- The shared resolver consumes inputs only when a complete batch is accepted into local output storage. Missing labor, missing inputs, unmet equipment requirements, or insufficient output room stop production without creating or consuming goods. Partial labor continues to use the Milestone 14 labor policy.
+- Producer resolution uses stable building-ID order. Shipment arrival times divide long simulation advances into deterministic segments, so a newly arrived input becomes usable at the same authoritative time regardless of browser refresh frequency.
+- The initial world adds an unstaffed Iron Mine and a Basic Food Workshop. The existing demonstration shipment now carries Crops from the Farm, allowing the player to release labor from another site, staff the Workshop, and observe Crops become Basic Food.
+- Producer inspection exposes the active recipe, required inputs, output rate, labor, blocker, progress, and destination storage. The company overview distinguishes missing inputs from labor and storage shortages. Full recipe selection remains reserved for Milestone 16.
+- Version 1 saves remain readable. Missing commodity maps are normalized to zero, missing recipe IDs receive building defaults, and stored output from a pre-Milestone 15 Farm is safely migrated into warehouse Basic Food before that Farm begins its new Crops recipe.
+
+`world/domain/commodities.ts` owns commodity identity and normalization. `world/domain/production.ts` owns recipe configuration and deterministic transformations. `LocalGameSimulation` supplies authoritative warehouse inventory, orders producer resolution, handles arrivals, and persists recipe state. Presentation only reads these results.
+
+For dependency verification, wait for the opening Crop shipment to reach the Warehouse, release the Quarry workers, and assign two workers to the Workshop. After six simulated seconds, confirm the Workshop holds three Basic Food and Warehouse Crops fell from four to two. Leave the Workshop staffed after its Crops run out and confirm it reports Missing inputs without gaining progress or output.
 
 ## Run and verify
 
@@ -204,9 +220,9 @@ For construction, choose Build, select a building, and move beside a road. Confi
 
 For production, open each site from the Production panel. Confirm the Farm advances, the Lumber Camp explains that it needs two workers, and the Quarry explains that its storage is full. Add two Lumber Camp workers and watch its simulation progress increase. Dispatch the Quarry output and confirm it changes to Running.
 
-For logistics, watch the initial food marker travel along Harvest Road and confirm the logistics panel changes it from In transit to Arrived. Dispatch the Quarry's stone, verify its local storage clears while warehouse stone remains unchanged, then confirm the warehouse gains 12 stone only after the Ridge Road arrival. Select the Warehouse to inspect its spatial inventory.
+For logistics, watch the initial Crops marker travel along Harvest Road and confirm the logistics panel changes it from In transit to Arrived. Dispatch the Quarry's Rough Stone, verify its local storage clears while warehouse stock remains unchanged, then confirm the warehouse gains 12 Rough Stone only after the Ridge Road arrival. Select the Warehouse to inspect its spatial inventory.
 
-For the market, choose Market in the top navigation. Compare each price trend and shortage indicator with warehouse stock. Follow the Staff Lumber Camp opportunity and assign two workers, then dispatch its first wood batch. After it arrives, return to Market and verify wood supply and pricing respond. Sell one delivered good and confirm both warehouse stock and cash change while the sale appears in the event log.
+For the market, choose Market in the top navigation. Compare each price trend and shortage indicator with warehouse stock. Follow the Staff Lumber Camp opportunity and assign two workers, then dispatch its first Logs batch. After it arrives, return to Market and verify Logs supply and pricing respond. Sell one delivered good and confirm both warehouse stock and cash change while the sale appears in the event log.
 
 ## Architecture and scope
 
@@ -214,6 +230,6 @@ For the market, choose Market in the top navigation. Compare each price trend an
 
 `presentation/world/projection.ts` owns coordinate transforms, bounded camera operations, visible chunk selection, and elevated terrain face picking. `buildings.ts` owns swappable primitive visual sets and derives geometry from semantic building positions. `render.ts` maps the visible semantic scene and selected visual set to shaded Canvas polygons. `world-map.tsx` owns presentation-only camera, selection, visual-profile, and UI state. Rendering runs when those inputs change rather than in a perpetual simulation loop.
 
-The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry, visible scene selection, and depth ordering remain presentation responsibilities. Picking scans only visible chunk cells in reverse painter order with a bounds check. Construction, demolition, production, shipments, warehouse arrivals, market ticks, sales, and worker assignments cross the local simulation command and validation boundary. Population supplies finite workforce; labor efficiency converts explicit elapsed time into deterministic productive work before existing recipes create output. These read models contain no renderer state. Version 1 local saves contain domain state only and are restored inside the client-owned simulation boundary. Competing companies and ownership remain unimplemented.
+The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry, visible scene selection, and depth ordering remain presentation responsibilities. Picking scans only visible chunk cells in reverse painter order with a bounds check. Construction, demolition, production, shipments, warehouse arrivals, market ticks, sales, and worker assignments cross the local simulation command and validation boundary. Population supplies finite workforce; labor efficiency converts explicit elapsed time into deterministic productive work. Recipe configuration then validates consumable inputs and storage before atomically consuming warehouse goods and creating local output. These read models contain no renderer state. Version 1 local saves contain domain state only and are restored inside the client-owned simulation boundary. Competing companies and ownership remain unimplemented.
 
 The blueprint and reference image describe the long-term destination, not the current art target.

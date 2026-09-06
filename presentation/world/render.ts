@@ -263,7 +263,7 @@ export function drawWorld(
         ctx.beginPath();
         ctx.arc(center.x, badgeY, Math.max(4, 5 * camera.zoom), 0, Math.PI * 2);
         ctx.fillStyle =
-          site.status === "running"
+          site.status === "running" || site.status === "worker_shortage"
             ? "#4ade80"
             : site.status === "missing_workers"
               ? "#fbbf24"
@@ -272,7 +272,7 @@ export function drawWorld(
         ctx.strokeStyle = "#102128";
         ctx.lineWidth = Math.max(1, camera.zoom);
         ctx.stroke();
-        if (site.status === "running") {
+        if (site.status === "running" || site.status === "worker_shortage") {
           const width = Math.max(18, 30 * camera.zoom);
           const progress = Math.min(1, site.progressMs / site.cycleMs);
           ctx.fillStyle = "#102128cc";

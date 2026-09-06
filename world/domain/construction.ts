@@ -12,6 +12,7 @@ export const constructibleBuildingTypes = [
   "farm",
   "lumber_camp",
   "quarry",
+  "iron_mine",
   "house",
   "warehouse",
   "workshop",
@@ -28,6 +29,7 @@ export const constructionCosts = {
   farm: { cashCents: 20_000, materials: { wood: 1 } },
   lumber_camp: { cashCents: 30_000, materials: { wood: 1 } },
   quarry: { cashCents: 35_000, materials: { wood: 1 } },
+  iron_mine: { cashCents: 45_000, materials: { wood: 1, stone: 1 } },
   house: { cashCents: 15_000, materials: { wood: 1, stone: 1 } },
   warehouse: { cashCents: 50_000, materials: { wood: 2, stone: 2 } },
   workshop: { cashCents: 25_000, materials: { wood: 1, stone: 1 } },
@@ -149,9 +151,18 @@ export function validatePlacement(
   )
     reasons.push("Quarry requires a stone resource");
   else if (
+    request.type === "iron_mine" &&
+    cells.some(
+      (cell) =>
+        !cell.resourceNodeId || resourceTypes.get(cell.resourceNodeId) !== "iron",
+    )
+  )
+    reasons.push("Iron Mine requires an iron resource");
+  else if (
     request.type !== "farm" &&
     request.type !== "lumber_camp" &&
     request.type !== "quarry" &&
+    request.type !== "iron_mine" &&
     cells.some((cell) => cell.terrain !== "grassland")
   )
     reasons.push("Requires grassland");

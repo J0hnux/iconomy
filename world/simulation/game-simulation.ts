@@ -24,16 +24,25 @@ import {
   type ShortageLevel,
 } from "../domain/market";
 import {
-  advanceProduction,
+  defaultRecipeByProducer,
   describeProduction,
   isProducerType,
+  isRecipeId,
   productionRecipes,
+  recipeForState,
+  recipeOutput,
+  resolveProduction,
   withStartingProduction,
   type Commodity,
   type ProductionSnapshot,
   type ProductionState,
   type ProducerType,
 } from "../domain/production";
+import {
+  commodityIds,
+  commodityRecord,
+  normalizeCommodityInventory,
+} from "../domain/commodities";
 import { describePopulation } from "../domain/population";
 import {
   describeLabor,
@@ -171,7 +180,7 @@ function isLocalSimulationSaveV1(
     !isNonnegativeInteger(value.nextEvent)
   )
     return false;
-  for (const commodity of Object.keys(marketDefinitions) as Commodity[]) {
+  for (const commodity of ["food", "wood", "stone"] as Commodity[]) {
     if (
       !isNonnegativeInteger(inventory[commodity]) ||
       !Array.isArray(history[commodity]) ||
@@ -179,10 +188,21 @@ function isLocalSimulationSaveV1(
     )
       return false;
   }
+  for (const commodity of commodityIds) {
+    if (
+      (inventory[commodity] !== undefined &&
+        !isNonnegativeInteger(inventory[commodity])) ||
+      (history[commodity] !== undefined && !Array.isArray(history[commodity])) ||
+      (shortages[commodity] !== undefined &&
+        !["none", "low", "critical"].includes(shortages[commodity] as string))
+    )
+      return false;
+  }
   return value.productionStates.every(
     (state) =>
       isRecord(state) &&
       typeof state.buildingId === "string" &&
+      (state.recipeId === undefined || isRecipeId(state.recipeId)) &&
       isNonnegativeInteger(state.assignedWorkers) &&
       isNonnegativeInteger(state.stored) &&
       isNonnegativeInteger(state.progressMs) &&
@@ -202,31 +222,76 @@ export class LocalGameSimulation {
   ) {
     this.assertTime(startTime);
     if (restored) {
+      const warehouseInventory = normalizeCommodityInventory(
+        restored.warehouseInventory,
+      );
+      const priceHistory = commodityRecord<PricePoint[]>([]);
+      const shortages = commodityRecord<ShortageLevel>("none");
+      for (const commodity of commodityIds) {
+        const savedHistory = restored.priceHistory[commodity];
+        priceHistory[commodity] = Array.isArray(savedHistory)
+          ? savedHistory.map((point) => ({ ...point }))
+          : [
+              {
+                time: restored.simulationTime,
+                priceCents: marketPriceCents(
+                  commodity,
+                  warehouseInventory[commodity],
+                  restored.marketTick,
+                ),
+              },
+            ];
+        shortages[commodity] =
+          restored.shortages[commodity] ??
+          shortageLevel(commodity, warehouseInventory[commodity]);
+      }
       this.state = {
         simulationTime: restored.simulationTime,
         revision: restored.revision,
         world: restored.world,
         productionStates: new Map(
-          restored.productionStates.map((state) => [state.buildingId, { ...state }]),
+          restored.productionStates.map((state) => [
+            state.buildingId,
+            { ...state },
+          ]),
         ),
         shipments: restored.shipments.map((shipment) => ({
           ...shipment,
           cargo: { ...shipment.cargo },
         })),
-        warehouseInventory: { ...restored.warehouseInventory },
+        warehouseInventory,
         nextShipment: restored.nextShipment,
         cashCents: restored.cashCents,
         marketTick: restored.marketTick,
         marketUpdatedAt: restored.marketUpdatedAt,
-        priceHistory: {
-          food: restored.priceHistory.food.map((point) => ({ ...point })),
-          wood: restored.priceHistory.wood.map((point) => ({ ...point })),
-          stone: restored.priceHistory.stone.map((point) => ({ ...point })),
-        },
-        shortages: { ...restored.shortages },
+        priceHistory,
+        shortages,
         events: restored.events.map((event) => ({ ...event })),
         nextEvent: restored.nextEvent,
       };
+      for (const building of this.producers) {
+        const existing = this.state.productionStates.get(building.id);
+        const migratesLegacyFarmState =
+          building.type === "farm" && existing?.recipeId === undefined;
+        if (migratesLegacyFarmState)
+          this.state.warehouseInventory.food += existing?.stored ?? 0;
+        const selected = existing
+          ? recipeForState(existing, building.type)
+          : productionRecipes[defaultRecipeByProducer[building.type]];
+        this.state.productionStates.set(building.id, {
+          buildingId: building.id,
+          recipeId: selected.id,
+          assignedWorkers: existing?.assignedWorkers ?? 0,
+          stored: migratesLegacyFarmState ? 0 : (existing?.stored ?? 0),
+          progressMs: migratesLegacyFarmState
+            ? 0
+            : (existing?.progressMs ?? 0),
+          laborRemainder: migratesLegacyFarmState
+            ? 0
+            : (existing?.laborRemainder ?? 0),
+          updatedAt: existing?.updatedAt ?? restored.simulationTime,
+        });
+      }
       return;
     }
     const producers = (world.buildings ?? []).filter(
@@ -249,8 +314,12 @@ export class LocalGameSimulation {
               originBuildingId: farm.id,
               destinationBuildingId: warehouse.id,
               cargo: {
-                commodity: "food",
-                quantity: productionRecipes.farm.outputAmount,
+                commodity: recipeOutput(
+                  productionRecipes[defaultRecipeByProducer.farm],
+                ).commodity,
+                quantity: recipeOutput(
+                  productionRecipes[defaultRecipeByProducer.farm],
+                ).amount,
               },
               departureTime: startTime,
               arrivalTime: startTime + demonstrationRoute.durationMs,
@@ -258,9 +327,13 @@ export class LocalGameSimulation {
             },
           ]
         : [];
-    const warehouseInventory = { food: 8, wood: 3, stone: 0 };
+    const warehouseInventory = normalizeCommodityInventory({
+      food: 8,
+      wood: 3,
+      stone: 0,
+    });
     const priceHistory = Object.fromEntries(
-      (Object.keys(marketDefinitions) as Commodity[]).map((commodity) => [
+      commodityIds.map((commodity) => [
         commodity,
         Array.from({ length: 5 }, (_, index) => ({
           time: startTime - (4 - index) * 5_000,
@@ -278,15 +351,19 @@ export class LocalGameSimulation {
       world,
       productionStates: new Map(
         producers.map((building) => {
-          const recipe = productionRecipes[building.type];
+          const selected =
+            productionRecipes[defaultRecipeByProducer[building.type]];
           return [
             building.id,
             {
               buildingId: building.id,
+              recipeId: selected.id,
               assignedWorkers:
-                building.type === "lumber_camp" ? 0 : recipe.requiredWorkers,
+                building.type === "farm" || building.type === "quarry"
+                  ? selected.requiredWorkers
+                  : 0,
               stored:
-                building.type === "quarry" ? recipe.storageCapacity : 0,
+                building.type === "quarry" ? selected.storageCapacity : 0,
               progressMs: 0,
               laborRemainder: 0,
               updatedAt: startTime,
@@ -301,11 +378,12 @@ export class LocalGameSimulation {
       marketTick: 4,
       marketUpdatedAt: startTime,
       priceHistory,
-      shortages: {
-        food: shortageLevel("food", warehouseInventory.food),
-        wood: shortageLevel("wood", warehouseInventory.wood),
-        stone: shortageLevel("stone", warehouseInventory.stone),
-      },
+      shortages: Object.fromEntries(
+        commodityIds.map((commodity) => [
+          commodity,
+          shortageLevel(commodity, warehouseInventory[commodity]),
+        ]),
+      ) as Record<Commodity, ShortageLevel>,
       events: [
         {
           id: "event-1",
@@ -391,11 +469,12 @@ export class LocalGameSimulation {
       cashCents: this.state.cashCents,
       marketTick: this.state.marketTick,
       marketUpdatedAt: this.state.marketUpdatedAt,
-      priceHistory: {
-        food: [...this.state.priceHistory.food],
-        wood: [...this.state.priceHistory.wood],
-        stone: [...this.state.priceHistory.stone],
-      },
+      priceHistory: Object.fromEntries(
+        commodityIds.map((commodity) => [
+          commodity,
+          [...this.state.priceHistory[commodity]],
+        ]),
+      ) as Record<Commodity, PricePoint[]>,
       shortages: { ...this.state.shortages },
       events: [...this.state.events],
       nextEvent: this.state.nextEvent,
@@ -411,42 +490,70 @@ export class LocalGameSimulation {
     this.assertTime(simulationTime);
     if (simulationTime < this.state.simulationTime)
       throw new RangeError("Simulation time cannot move backward.");
-    for (const building of this.producers) {
-      const state = this.state.productionStates.get(building.id);
-      if (state)
-        this.state.productionStates.set(
-          building.id,
-          advanceProduction(state, building.type, simulationTime),
-        );
-    }
     const arrivals = this.state.shipments
       .filter(
         (shipment) =>
           shipment.status === "in_transit" &&
           shipment.arrivalTime <= simulationTime,
       )
-      .sort((a, b) => a.arrivalTime - b.arrivalTime);
-    for (const shipment of arrivals) {
-      this.advanceMarket(shipment.arrivalTime);
-      this.state.warehouseInventory[shipment.cargo.commodity] +=
-        shipment.cargo.quantity;
-      this.addEvent(
-        shipment.arrivalTime,
-        "logistics",
-        `${shipment.cargo.quantity} ${shipment.cargo.commodity} arrived at Novagrad Warehouse.`,
+      .sort(
+        (a, b) =>
+          a.arrivalTime - b.arrivalTime || a.id.localeCompare(b.id),
       );
-      this.state.shipments = this.state.shipments.map((candidate) =>
-        candidate.id === shipment.id
-          ? {
-              ...candidate,
-              status: "arrived",
-              arrivedAt: shipment.arrivalTime,
-            }
-          : candidate,
+    let arrivalIndex = 0;
+    while (arrivalIndex < arrivals.length) {
+      const arrivalTime = Math.max(
+        this.state.simulationTime,
+        arrivals[arrivalIndex].arrivalTime,
       );
+      this.advanceProducersTo(arrivalTime);
+      this.advanceMarket(arrivalTime);
+      while (
+        arrivalIndex < arrivals.length &&
+        Math.max(
+          this.state.simulationTime,
+          arrivals[arrivalIndex].arrivalTime,
+        ) === arrivalTime
+      ) {
+        const shipment = arrivals[arrivalIndex++];
+        this.state.warehouseInventory[shipment.cargo.commodity] +=
+          shipment.cargo.quantity;
+        this.addEvent(
+          shipment.arrivalTime,
+          "logistics",
+          `${shipment.cargo.quantity} ${shipment.cargo.commodity} arrived at Novagrad Warehouse.`,
+        );
+        this.state.shipments = this.state.shipments.map((candidate) =>
+          candidate.id === shipment.id
+            ? {
+                ...candidate,
+                status: "arrived",
+                arrivedAt: shipment.arrivalTime,
+              }
+            : candidate,
+        );
+      }
     }
+    this.advanceProducersTo(simulationTime);
     this.advanceMarket(simulationTime);
     this.state.simulationTime = simulationTime;
+  }
+
+  private advanceProducersTo(simulationTime: number) {
+    for (const building of [...this.producers].sort((a, b) =>
+      a.id.localeCompare(b.id),
+    )) {
+      const state = this.state.productionStates.get(building.id);
+      if (!state) continue;
+      const resolution = resolveProduction(
+        state,
+        building.type,
+        simulationTime,
+        this.state.warehouseInventory,
+      );
+      this.state.productionStates.set(building.id, resolution.state);
+      this.state.warehouseInventory = { ...resolution.inventory };
+    }
   }
 
   private construct(
@@ -497,8 +604,11 @@ export class LocalGameSimulation {
     }
     this.state.world = world;
     if (isProducerType(building.type)) {
+      const selected =
+        productionRecipes[defaultRecipeByProducer[building.type]];
       this.state.productionStates.set(building.id, {
         buildingId: building.id,
+        recipeId: selected.id,
         assignedWorkers: 0,
         stored: 0,
         progressMs: 0,
@@ -577,7 +687,7 @@ export class LocalGameSimulation {
     const state = this.state.productionStates.get(buildingId);
     if (!building || !state)
       return this.failure(404, "Production site was not found.");
-    const recipe = productionRecipes[building.type];
+    const selected = recipeForState(state, building.type);
     if (!Number.isInteger(workers) || workers < 0)
       return this.failure(
         422,
@@ -598,7 +708,7 @@ export class LocalGameSimulation {
       workingAgePopulation,
       assignedElsewhere,
       workers,
-      recipe.requiredWorkers,
+      selected.requiredWorkers,
     );
     if (!validation.valid) return this.failure(422, validation.reason);
     this.state.productionStates.set(buildingId, {
@@ -609,11 +719,11 @@ export class LocalGameSimulation {
     this.addEvent(
       this.state.simulationTime,
       "production",
-      workers === recipe.requiredWorkers
-        ? `${buildingDefinitions[building.type].name} started production.`
+      workers === selected.requiredWorkers
+        ? `${buildingDefinitions[building.type].name} staffed ${selected.name}.`
         : workers === 0
           ? `${buildingDefinitions[building.type].name} paused and released its workers.`
-          : `${buildingDefinitions[building.type].name} has a worker shortage at ${workers}/${recipe.requiredWorkers}.`,
+          : `${buildingDefinitions[building.type].name} has a worker shortage at ${workers}/${selected.requiredWorkers}.`,
     );
     return this.success();
   }
@@ -639,6 +749,8 @@ export class LocalGameSimulation {
         "This production site has no road connection to the warehouse.",
       );
     const collected = state.stored;
+    const selected = recipeForState(state, building.type);
+    const output = recipeOutput(selected);
     this.state.productionStates.set(buildingId, {
       ...state,
       stored: 0,
@@ -652,7 +764,7 @@ export class LocalGameSimulation {
       originBuildingId: buildingId,
       destinationBuildingId: this.warehouse.id,
       cargo: {
-        commodity: productionRecipes[building.type].output,
+        commodity: output.commodity,
         quantity: collected,
       },
       departureTime: this.state.simulationTime,
@@ -798,7 +910,9 @@ export class LocalGameSimulation {
   private economySnapshot(): ProductionSnapshot {
     const sites = this.producers.flatMap((building) => {
       const state = this.state.productionStates.get(building.id);
-      const site = state ? describeProduction(state, building) : null;
+      const site = state
+        ? describeProduction(state, building, this.state.warehouseInventory)
+        : null;
       return site ? [site] : [];
     });
     const totalWorkforce = describePopulation(

@@ -24,7 +24,7 @@ export const buildingDefinitions = {
     name: "Workshop",
     width: 2,
     depth: 1,
-    purpose: "A small production site. Recipes and workers arrive later.",
+    purpose: "Processes raw and intermediate goods through a selected recipe.",
   },
   farm: {
     name: "Farm",
@@ -43,6 +43,12 @@ export const buildingDefinitions = {
     width: 2,
     depth: 2,
     purpose: "Extracts stone from the exposed ridge.",
+  },
+  iron_mine: {
+    name: "Iron Mine",
+    width: 2,
+    depth: 2,
+    purpose: "Extracts iron ore from an exposed iron deposit.",
   },
 } as const;
 export type BuildingType = keyof typeof buildingDefinitions;

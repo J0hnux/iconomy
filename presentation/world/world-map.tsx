@@ -20,7 +20,12 @@ import type {
   ProductionSnapshot,
   ProductionSite,
 } from "@/world/domain/production";
-import { isProducerType, productionRecipes } from "@/world/domain/production";
+import {
+  defaultRecipeByProducer,
+  isProducerType,
+  productionRecipes,
+} from "@/world/domain/production";
+import { commodityDefinitions } from "@/world/domain/commodities";
 import type { PricePoint } from "@/world/domain/market";
 import {
   LocalGameSimulation,
@@ -78,7 +83,10 @@ const materialSummary = (
   materials: Readonly<Partial<Record<Commodity, number>>>,
 ) =>
   Object.entries(materials)
-    .map(([commodity, quantity]) => `${quantity} ${commodity}`)
+    .map(
+      ([commodity, quantity]) =>
+        `${quantity} ${commodityDefinitions[commodity as Commodity].name}`,
+    )
     .join(" · ");
 
 function PriceSparkline({ history }: { history: readonly PricePoint[] }) {
@@ -632,7 +640,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestones 0–14
+              Prototype / Milestones 0–15
             </p>
           </div>
         </div>
@@ -1222,6 +1230,10 @@ export default function WorldMap({
                     const statusLabel =
                       site.status === "storage_full"
                         ? "Storage full"
+                        : site.status === "missing_inputs"
+                          ? "Missing inputs"
+                          : site.status === "missing_equipment"
+                            ? "Missing equipment"
                         : site.laborStatus === "unassigned"
                           ? "Unassigned"
                           : site.laborStatus === "shortage"
@@ -1246,17 +1258,17 @@ export default function WorldMap({
                       >
                         <span>
                           <span className="block text-xs font-medium">
-                            {site.name}
+                            {site.name} · {site.recipeName}
                           </span>
                           <span className="mt-1 block text-[10px] text-slate-400">
                             {site.assignedWorkers}/{site.requiredWorkers}{" "}
                             workers · {Math.round(site.laborEfficiency * 100)}%
                             {" labor · "}{site.stored}/{site.storageCapacity}{" "}
-                            {site.output}
+                            {commodityDefinitions[site.output].name}
                           </span>
                         </span>
                         <span
-                          className={`shrink-0 text-[10px] ${site.status === "running" ? "text-emerald-300" : site.status === "missing_workers" ? "text-amber-300" : "text-red-300"}`}
+                          className={`shrink-0 text-[10px] ${site.status === "running" || site.status === "worker_shortage" ? "text-emerald-300" : site.status === "missing_workers" ? "text-amber-300" : "text-red-300"}`}
                         >
                           ● {statusLabel}
                         </span>
@@ -1433,7 +1445,16 @@ export default function WorldMap({
                         <span className="mt-1 block text-[10px] leading-4 text-slate-300">
                           {buildingDefinitions[type].purpose}
                           {isProducerType(type)
-                            ? ` Produces ${productionRecipes[type].output}; ${productionRecipes[type].requiredWorkers} workers required.`
+                            ? (() => {
+                                const selected =
+                                  productionRecipes[
+                                    defaultRecipeByProducer[type]
+                                  ];
+                                const [commodity] = Object.keys(
+                                  selected.outputs,
+                                ) as Commodity[];
+                                return ` Default: ${selected.name} → ${commodityDefinitions[commodity].name}; ${selected.requiredWorkers} workers required.`;
+                              })()
                             : ""}
                         </span>
                         {affordability && !affordability.affordable && (
@@ -1562,18 +1583,22 @@ export default function WorldMap({
             <div className="mt-4 rounded-xl border border-white/10 bg-black/10 p-4">
               <div className="flex items-center justify-between gap-3">
                 <span
-                  className={`text-xs font-semibold ${selectedProduction.status === "running" ? "text-emerald-300" : selectedProduction.status === "missing_workers" ? "text-amber-300" : "text-red-300"}`}
+                  className={`text-xs font-semibold ${selectedProduction.status === "running" || selectedProduction.status === "worker_shortage" ? "text-emerald-300" : selectedProduction.status === "missing_workers" ? "text-amber-300" : "text-red-300"}`}
                 >
                   {selectedProduction.status === "storage_full"
                     ? "● Storage full"
+                    : selectedProduction.status === "missing_inputs"
+                      ? "● Missing inputs"
+                      : selectedProduction.status === "missing_equipment"
+                        ? "● Missing equipment"
                     : selectedProduction.laborStatus === "unassigned"
                       ? "● Unassigned"
                       : selectedProduction.laborStatus === "shortage"
                         ? "● Worker shortage"
                         : "● Running"}
                 </span>
-                <span className="text-xs capitalize text-slate-400">
-                  {selectedProduction.output}
+                <span className="text-xs text-slate-400">
+                  {selectedProduction.recipeName}
                 </span>
               </div>
               <p className="mt-2 text-xs leading-5 text-slate-300">
@@ -1584,6 +1609,19 @@ export default function WorldMap({
                 <span>
                   {selectedProduction.assignedWorkers} /{" "}
                   {selectedProduction.requiredWorkers}
+                </span>
+              </div>
+              <div className="mt-2 flex items-start justify-between gap-3 text-xs">
+                <span className="text-slate-400">Inputs</span>
+                <span className="text-right">
+                  {Object.entries(selectedProduction.consumableInputs).length
+                    ? Object.entries(selectedProduction.consumableInputs)
+                        .map(
+                          ([commodity, quantity]) =>
+                            `${quantity} ${commodityDefinitions[commodity as Commodity].name}`,
+                        )
+                        .join(" + ")
+                    : "None · primitive production"}
                 </span>
               </div>
               <div className="mt-2 flex items-center justify-between text-xs">
@@ -1645,7 +1683,7 @@ export default function WorldMap({
               </div>
               <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
                 <div
-                  className={`h-full transition-[width] ${selectedProduction.status === "running" ? "bg-emerald-400" : "bg-slate-600"}`}
+                  className={`h-full transition-[width] ${selectedProduction.status === "running" || selectedProduction.status === "worker_shortage" ? "bg-emerald-400" : "bg-slate-600"}`}
                   style={{
                     width: `${Math.min(100, (selectedProduction.progressMs / selectedProduction.cycleMs) * 100)}%`,
                   }}
@@ -1656,7 +1694,7 @@ export default function WorldMap({
                 <span>
                   {selectedProduction.stored} /{" "}
                   {selectedProduction.storageCapacity}{" "}
-                  {selectedProduction.output}
+                  {commodityDefinitions[selectedProduction.output].name}
                 </span>
               </div>
               <button
@@ -1687,8 +1725,8 @@ export default function WorldMap({
                       <span className="block font-mono text-lg text-white">
                         {quantity}
                       </span>
-                      <span className="text-[10px] capitalize text-slate-400">
-                        {commodity}
+                      <span className="text-[10px] text-slate-400">
+                        {commodityDefinitions[commodity as Commodity].name}
                       </span>
                     </div>
                   ),

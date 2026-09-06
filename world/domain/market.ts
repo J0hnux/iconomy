@@ -1,5 +1,6 @@
 import type { WarehouseInventory } from "./logistics";
 import type { Commodity, ProductionSite } from "./production";
+import { commodityDefinitions, commodityIds } from "./commodities";
 
 export const marketDefinitions: Record<
   Commodity,
@@ -11,23 +12,34 @@ export const marketDefinitions: Record<
   }>
 > = {
   food: {
-    name: "Food",
+    name: commodityDefinitions.food.name,
     basePriceCents: 600,
     desiredStock: 12,
     demandPerTick: 4,
   },
   wood: {
-    name: "Wood",
+    name: commodityDefinitions.wood.name,
     basePriceCents: 850,
     desiredStock: 10,
     demandPerTick: 3,
   },
   stone: {
-    name: "Stone",
+    name: commodityDefinitions.stone.name,
     basePriceCents: 1_100,
     desiredStock: 8,
     demandPerTick: 2,
   },
+  crops: { name: commodityDefinitions.crops.name, basePriceCents: 450, desiredStock: 10, demandPerTick: 2 },
+  lumber: { name: commodityDefinitions.lumber.name, basePriceCents: 1_250, desiredStock: 8, demandPerTick: 1 },
+  cut_stone: { name: commodityDefinitions.cut_stone.name, basePriceCents: 1_600, desiredStock: 7, demandPerTick: 1 },
+  animal_feed: { name: commodityDefinitions.animal_feed.name, basePriceCents: 700, desiredStock: 8, demandPerTick: 1 },
+  livestock: { name: commodityDefinitions.livestock.name, basePriceCents: 1_500, desiredStock: 5, demandPerTick: 1 },
+  raw_meat: { name: commodityDefinitions.raw_meat.name, basePriceCents: 1_100, desiredStock: 6, demandPerTick: 1 },
+  cooked_meat: { name: commodityDefinitions.cooked_meat.name, basePriceCents: 1_700, desiredStock: 6, demandPerTick: 1 },
+  prepared_meal: { name: commodityDefinitions.prepared_meal.name, basePriceCents: 2_400, desiredStock: 6, demandPerTick: 1 },
+  iron_ore: { name: commodityDefinitions.iron_ore.name, basePriceCents: 1_300, desiredStock: 8, demandPerTick: 1 },
+  iron: { name: commodityDefinitions.iron.name, basePriceCents: 2_100, desiredStock: 6, demandPerTick: 1 },
+  iron_tools: { name: commodityDefinitions.iron_tools.name, basePriceCents: 3_800, desiredStock: 4, demandPerTick: 1 },
 };
 
 export type PricePoint = Readonly<{ time: number; priceCents: number }>;
@@ -83,7 +95,7 @@ export function marketPriceCents(
       (definition.desiredStock - available) / definition.desiredStock,
     ),
   );
-  const phase = commodity === "food" ? 0 : commodity === "wood" ? 2 : 4;
+  const phase = commodityIds.indexOf(commodity) * 2;
   const demandPulse = Math.sin((tick + phase) * 0.7) * 0.025;
   return Math.max(
     100,
@@ -108,10 +120,11 @@ export function buildMarketListings(
 ): MarketListing[] {
   return (Object.keys(marketDefinitions) as Commodity[]).map((commodity) => {
     const definition = marketDefinitions[commodity];
-    const history = histories[commodity];
+    const history = histories[commodity] ?? [];
+    const available = inventory[commodity] ?? 0;
     const priceCents =
       history.at(-1)?.priceCents ??
-      marketPriceCents(commodity, inventory[commodity], tick);
+      marketPriceCents(commodity, available, tick);
     const previousPriceCents = history.at(-2)?.priceCents ?? priceCents;
     return {
       commodity,
@@ -124,10 +137,10 @@ export function buildMarketListings(
           : Math.round(
               ((priceCents - previousPriceCents) / previousPriceCents) * 1_000,
             ) / 10,
-      available: inventory[commodity],
+      available,
       desiredStock: definition.desiredStock,
       demandPerTick: definition.demandPerTick,
-      shortage: shortageLevel(commodity, inventory[commodity]),
+      shortage: shortageLevel(commodity, available),
       history,
     };
   });
@@ -137,19 +150,17 @@ export function buildEconomicOpportunities(
   listings: readonly MarketListing[],
   sites: readonly ProductionSite[],
 ): EconomicOpportunity[] {
-  const producerFor: Record<Commodity, ProductionSite["type"]> = {
-    food: "farm",
-    wood: "lumber_camp",
-    stone: "quarry",
-  };
   return listings
     .flatMap((listing) => {
       const site = sites.find(
-        (candidate) => candidate.type === producerFor[listing.commodity],
+        (candidate) => candidate.output === listing.commodity,
       );
       if (!site || listing.shortage === "none") return [];
       const price = `$${(listing.priceCents / 100).toFixed(2)}`;
-      if (site.status === "missing_workers")
+      if (
+        site.status === "missing_workers" ||
+        site.status === "worker_shortage"
+      )
         return [
           {
             id: `${listing.commodity}-staff`,
@@ -159,6 +170,18 @@ export function buildEconomicOpportunities(
             actionLabel: "Assign workers",
             targetBuildingId: site.buildingId,
             priority: 100,
+          },
+        ];
+      if (site.status === "missing_inputs")
+        return [
+          {
+            id: `${listing.commodity}-inputs`,
+            commodity: listing.commodity,
+            title: `Supply ${site.recipeName}`,
+            reason: `${listing.name} is short at ${price}; ${site.statusReason}`,
+            actionLabel: "Inspect inputs",
+            targetBuildingId: site.buildingId,
+            priority: 95,
           },
         ];
       if (site.status === "storage_full")

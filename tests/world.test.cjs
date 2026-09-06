@@ -705,12 +705,12 @@ test("population needs derive deterministically from authoritative world and eco
     initialEconomy.population,
     describePopulation(startingWorld, 5, 8),
   );
-  const initialFoodShipment = initialEconomy.logistics.shipments.find(
-    (shipment) => shipment.cargo.commodity === "food",
+  const initialCropShipment = initialEconomy.logistics.shipments.find(
+    (shipment) => shipment.cargo.commodity === "crops",
   );
-  const arrived = simulation.read(initialFoodShipment.arrivalTime).economy
-    .population;
-  assert.equal(arrived.foodSupply, 12);
+  const arrived = simulation.read(initialCropShipment.arrivalTime).economy;
+  assert.equal(arrived.population.foodSupply, 8);
+  assert.equal(arrived.logistics.warehouseInventory.crops, 4);
 });
 
 test("starting producers occupy level resource footprints without changing terrain", () => {
@@ -729,8 +729,10 @@ test("starting producers occupy level resource footprints without changing terra
   );
   assert.deepEqual(producers.map((building) => building.type).sort(), [
     "farm",
+    "iron_mine",
     "lumber_camp",
     "quarry",
+    "workshop",
   ]);
   for (const building of producers) {
     const footprint = footprintOf(building.type, building.rotation);
@@ -747,6 +749,10 @@ test("starting producers occupy level resource footprints without changing terra
       assert.ok(cells.every((cell) => cell.resourceNodeId === "northwood"));
     if (building.type === "quarry")
       assert.ok(cells.every((cell) => cell.resourceNodeId === "stone-ridge"));
+    if (building.type === "iron_mine")
+      assert.ok(cells.every((cell) => cell.resourceNodeId === "iron-heights"));
+    if (building.type === "workshop")
+      assert.ok(cells.every((cell) => cell.terrain === "grassland"));
   }
   assert.equal(result.cells, settled.cells);
   assert.deepEqual(withStartingProduction(settled), result);
@@ -763,7 +769,7 @@ test("production advances from explicit simulation time and explains idle states
   assert.equal(lumber.status, "missing_workers");
   assert.match(lumber.statusReason, /Needs 2 workers/);
   assert.equal(quarry.status, "storage_full");
-  assert.match(quarry.statusReason, /Dispatch stone/);
+  assert.match(quarry.statusReason, /Dispatch Rough Stone/);
   const advanced = simulation.read(9_000).economy;
   assert.equal(advanced.sites.find((site) => site.type === "farm").stored, 4);
   assert.equal(
@@ -925,7 +931,7 @@ test("labor capacity scales production deterministically and survives save loadi
     totalWorkforce: 6,
     assignedWorkers: 5,
     unassignedWorkers: 1,
-    shortageBuildings: 1,
+    shortageBuildings: 3,
   });
   const farm = initial.sites.find((site) => site.type === "farm");
   const lumber = initial.sites.find((site) => site.type === "lumber_camp");
@@ -950,7 +956,7 @@ test("labor capacity scales production deterministically and survives save loadi
     totalWorkforce: 6,
     assignedWorkers: 4,
     unassignedWorkers: 2,
-    shortageBuildings: 2,
+    shortageBuildings: 4,
   });
   const loaded = LocalGameSimulation.fromSave(
     JSON.parse(JSON.stringify(simulation.exportSave())),
@@ -961,6 +967,294 @@ test("labor capacity scales production deterministically and survives save loadi
     1,
   );
   assert.deepEqual(loaded.economy.labor, reduced.readModel.economy.labor);
+});
+
+test("dependency-driven recipes consume inputs, respect labor and storage, and remain deterministic", () => {
+  const {
+    describeProduction,
+    productionRecipes,
+    resolveProduction,
+  } = require("../world/domain/production.ts");
+  const {
+    normalizeCommodityInventory,
+  } = require("../world/domain/commodities.ts");
+
+  const workshop = {
+    id: "workshop-1",
+    type: "workshop",
+    x: 0,
+    y: 0,
+    z: 1,
+    settlementId: "novagrad",
+    rotation: "north",
+  };
+  const state = {
+    buildingId: workshop.id,
+    recipeId: "saw_lumber",
+    assignedWorkers: 2,
+    stored: 0,
+    progressMs: 0,
+    laborRemainder: 0,
+    updatedAt: 0,
+  };
+  const expectedRecipes = {
+    grow_crops: ["farm", {}, { crops: 4 }],
+    harvest_logs: ["lumber_camp", {}, { wood: 3 }],
+    quarry_stone: ["quarry", {}, { stone: 2 }],
+    mine_iron_ore: ["iron_mine", {}, { iron_ore: 2 }],
+    saw_lumber: ["workshop", { wood: 2 }, { lumber: 2 }],
+    make_basic_food: ["workshop", { crops: 2 }, { food: 3 }],
+    make_animal_feed: ["workshop", { crops: 2 }, { animal_feed: 3 }],
+    raise_livestock: ["farm", { animal_feed: 2 }, { livestock: 1 }],
+    butcher_meat: ["workshop", { livestock: 1 }, { raw_meat: 2 }],
+    cook_meat: ["workshop", { raw_meat: 2 }, { cooked_meat: 2 }],
+    prepare_meal: [
+      "workshop",
+      { crops: 1, cooked_meat: 1 },
+      { prepared_meal: 2 },
+    ],
+    cut_stone: ["workshop", { stone: 2 }, { cut_stone: 2 }],
+    smelt_iron: ["workshop", { iron_ore: 2 }, { iron: 1 }],
+    forge_iron_tools: ["workshop", { iron: 2 }, { iron_tools: 1 }],
+  };
+  assert.deepEqual(Object.keys(productionRecipes), Object.keys(expectedRecipes));
+  for (const [recipeId, [producer, inputs, outputs]] of Object.entries(
+    expectedRecipes,
+  )) {
+    const configured = productionRecipes[recipeId];
+    assert.equal(configured.producer, producer);
+    assert.deepEqual(configured.consumableInputs, inputs);
+    assert.deepEqual(configured.outputs, outputs);
+    assert.deepEqual(configured.equipmentRequirements, {});
+    assert.ok(configured.requiredWorkers > 0);
+    assert.ok(configured.durationMs > 0);
+    assert.ok(configured.storageCapacity > 0);
+    assert.equal(configured.destinationStorage, "site");
+  }
+
+  const withoutInputs = resolveProduction(
+    state,
+    workshop.type,
+    30_000,
+    normalizeCommodityInventory({}),
+  );
+  assert.equal(withoutInputs.completedCycles, 0);
+  assert.equal(withoutInputs.state.stored, 0);
+  assert.equal(withoutInputs.state.progressMs, 0);
+  assert.equal(
+    describeProduction(
+      withoutInputs.state,
+      workshop,
+      withoutInputs.inventory,
+    ).status,
+    "missing_inputs",
+  );
+
+  const partial = resolveProduction(
+    { ...state, assignedWorkers: 1 },
+    workshop.type,
+    16_000,
+    normalizeCommodityInventory({ wood: 5 }),
+  );
+  assert.equal(partial.completedCycles, 1);
+  assert.equal(partial.state.stored, 2);
+  assert.equal(partial.inventory.wood, 3);
+  assert.deepEqual(partial.consumedInputs, { wood: 2 });
+
+  const full = resolveProduction(
+    state,
+    workshop.type,
+    8_000,
+    normalizeCommodityInventory({ wood: 5 }),
+  );
+  assert.equal(full.completedCycles, 1);
+  assert.equal(full.state.stored, 2);
+  assert.equal(full.inventory.wood, 3);
+
+  const stopped = resolveProduction(
+    { ...partial.state, assignedWorkers: 0 },
+    workshop.type,
+    40_000,
+    partial.inventory,
+  );
+  assert.equal(stopped.state.stored, partial.state.stored);
+  assert.equal(stopped.inventory.wood, partial.inventory.wood);
+
+  const fullStorage = resolveProduction(
+    { ...state, stored: productionRecipes.saw_lumber.storageCapacity - 1 },
+    workshop.type,
+    40_000,
+    normalizeCommodityInventory({ wood: 10 }),
+  );
+  assert.equal(fullStorage.completedCycles, 0);
+  assert.equal(fullStorage.inventory.wood, 10);
+
+  let splitState = state;
+  let splitInventory = normalizeCommodityInventory({ wood: 6 });
+  for (let time = 1_000; time <= 24_000; time += 1_000) {
+    const resolution = resolveProduction(
+      splitState,
+      workshop.type,
+      time,
+      splitInventory,
+    );
+    splitState = resolution.state;
+    splitInventory = resolution.inventory;
+  }
+  const single = resolveProduction(
+    state,
+    workshop.type,
+    24_000,
+    normalizeCommodityInventory({ wood: 6 }),
+  );
+  assert.deepEqual(splitState, single.state);
+  assert.deepEqual(splitInventory, single.inventory);
+  assert.equal(single.state.stored, 6);
+  assert.equal(single.inventory.wood, 0);
+
+  const meal = resolveProduction(
+    { ...state, recipeId: "prepare_meal" },
+    workshop.type,
+    productionRecipes.prepare_meal.durationMs,
+    normalizeCommodityInventory({ crops: 2, cooked_meat: 1 }),
+  );
+  assert.deepEqual(meal.consumedInputs, { crops: 1, cooked_meat: 1 });
+  assert.equal(meal.inventory.crops, 1);
+  assert.equal(meal.inventory.cooked_meat, 0);
+  assert.equal(meal.state.stored, 2);
+});
+
+test("local simulation connects crop inputs to Basic Food and preserves the allocation in saves", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const initial = simulation.read(1_000).economy;
+  const cropShipment = initial.logistics.shipments.find(
+    (shipment) => shipment.cargo.commodity === "crops",
+  );
+  const arrived = simulation.read(cropShipment.arrivalTime).economy;
+  const quarry = arrived.sites.find((site) => site.type === "quarry");
+  const workshop = arrived.sites.find((site) => site.type === "workshop");
+  assert.equal(workshop.recipeId, "make_basic_food");
+  assert.equal(workshop.status, "missing_workers");
+
+  assert.equal(
+    simulation.execute(
+      { type: "set_workers", buildingId: quarry.buildingId, workers: 0 },
+      cropShipment.arrivalTime,
+    ).ok,
+    true,
+  );
+  assert.equal(
+    simulation.execute(
+      { type: "set_workers", buildingId: workshop.buildingId, workers: 2 },
+      cropShipment.arrivalTime,
+    ).ok,
+    true,
+  );
+  const produced = simulation.read(cropShipment.arrivalTime + 6_000).economy;
+  const producedWorkshop = produced.sites.find(
+    (site) => site.buildingId === workshop.buildingId,
+  );
+  assert.equal(producedWorkshop.stored, 3);
+  assert.equal(produced.logistics.warehouseInventory.crops, 2);
+  assert.equal(produced.logistics.warehouseInventory.food, 8);
+
+  const save = JSON.parse(JSON.stringify(simulation.exportSave()));
+  const loaded = LocalGameSimulation.fromSave(save).read(
+    cropShipment.arrivalTime + 6_000,
+  ).economy;
+  assert.equal(
+    loaded.sites.find((site) => site.buildingId === workshop.buildingId)
+      .recipeId,
+    "make_basic_food",
+  );
+  assert.equal(loaded.logistics.warehouseInventory.crops, 2);
+
+  const legacy = JSON.parse(JSON.stringify(save));
+  for (const commodity of [
+    "crops",
+    "lumber",
+    "cut_stone",
+    "animal_feed",
+    "livestock",
+    "raw_meat",
+    "cooked_meat",
+    "prepared_meal",
+    "iron_ore",
+    "iron",
+    "iron_tools",
+  ]) {
+    delete legacy.warehouseInventory[commodity];
+    delete legacy.priceHistory[commodity];
+    delete legacy.shortages[commodity];
+  }
+  legacy.productionStates = legacy.productionStates
+    .filter((state) => state.buildingId !== workshop.buildingId)
+    .map((state) => {
+      const withoutRecipe = { ...state };
+      delete withoutRecipe.recipeId;
+      if (withoutRecipe.buildingId === "novagrad-farm") {
+        withoutRecipe.stored = 4;
+        withoutRecipe.progressMs = 3_000;
+      }
+      return withoutRecipe;
+    });
+  const legacyFood = legacy.warehouseInventory.food;
+  const migrated = LocalGameSimulation.fromSave(legacy).read(
+    cropShipment.arrivalTime + 6_000,
+  ).economy;
+  assert.equal(migrated.logistics.warehouseInventory.food, legacyFood + 4);
+  assert.equal(migrated.logistics.warehouseInventory.crops, 0);
+  assert.equal(
+    migrated.sites.find((site) => site.buildingId === "novagrad-farm")
+      .recipeId,
+    "grow_crops",
+  );
+  assert.equal(
+    migrated.sites.find((site) => site.buildingId === workshop.buildingId)
+      .recipeId,
+    "make_basic_food",
+  );
+
+  const configureBeforeArrival = () => {
+    const candidate = new LocalGameSimulation(createStartingWorld(), 1_000);
+    const economy = candidate.read(1_000).economy;
+    const candidateQuarry = economy.sites.find(
+      (site) => site.type === "quarry",
+    );
+    const candidateWorkshop = economy.sites.find(
+      (site) => site.type === "workshop",
+    );
+    const shipment = economy.logistics.shipments.find(
+      (entry) => entry.cargo.commodity === "crops",
+    );
+    candidate.execute(
+      {
+        type: "set_workers",
+        buildingId: candidateQuarry.buildingId,
+        workers: 0,
+      },
+      1_000,
+    );
+    candidate.execute(
+      {
+        type: "set_workers",
+        buildingId: candidateWorkshop.buildingId,
+        workers: 2,
+      },
+      1_000,
+    );
+    return { candidate, arrivalTime: shipment.arrivalTime };
+  };
+  const direct = configureBeforeArrival();
+  const partitioned = configureBeforeArrival();
+  direct.candidate.read(direct.arrivalTime + 6_000);
+  partitioned.candidate.read(partitioned.arrivalTime);
+  partitioned.candidate.read(partitioned.arrivalTime + 6_000);
+  assert.deepEqual(direct.candidate.exportSave(), partitioned.candidate.exportSave());
 });
 
 test("local authority is deterministic, monotonic, and exports versioned state", () => {
@@ -1011,7 +1305,7 @@ test("logistics routes connect each producer to the settlement road network", ()
     settled.roads.map((road) => `${road.x},${road.y}`),
   );
   const routed = withStartingLogistics(withStartingProduction(settled));
-  assert.equal(routed.logisticsRoutes.length, 3);
+  assert.equal(routed.logisticsRoutes.length, 5);
   const roadKeys = new Set(routed.roads.map((road) => `${road.x},${road.y}`));
   for (const route of routed.logisticsRoutes) {
     const origin = routed.buildings.find(
@@ -1106,6 +1400,9 @@ test("market listings expose price trends, shortages, and actionable opportuniti
       type: "lumber_camp",
       name: "Lumber Camp",
       buildingId: "lumber",
+      output: "wood",
+      recipeName: "Harvest Logs",
+      statusReason: "No workers assigned.",
       status: "missing_workers",
       requiredWorkers: 2,
       assignedWorkers: 0,
@@ -1114,6 +1411,9 @@ test("market listings expose price trends, shortages, and actionable opportuniti
       type: "quarry",
       name: "Quarry",
       buildingId: "quarry",
+      output: "stone",
+      recipeName: "Quarry Rough Stone",
+      statusReason: "Output storage is full.",
       status: "storage_full",
       requiredWorkers: 3,
       assignedWorkers: 3,
@@ -1136,7 +1436,11 @@ test("market sales remove warehouse goods, credit cash, and create events", () =
     (listing) => listing.commodity === "food",
   );
   assert.equal(initial.market.cashCents, 12_450_00);
-  assert.equal(initial.market.opportunities[0].commodity, "wood");
+  assert.ok(
+    initial.market.opportunities.some(
+      (opportunity) => opportunity.commodity === "wood",
+    ),
+  );
   const sale = simulation.execute(
     {
       type: "sell_goods",

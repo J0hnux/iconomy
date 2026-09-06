@@ -4,6 +4,7 @@ import {
   type Commodity,
   type ProducerType,
 } from "./production";
+import type { CommodityInventory } from "./commodities";
 import type { WorldPosition, WorldSnapshot } from "./world";
 
 export type LogisticsRoute = Readonly<{
@@ -28,7 +29,7 @@ export type Shipment = Readonly<{
   arrivedAt?: number;
 }>;
 
-export type WarehouseInventory = Readonly<Record<Commodity, number>>;
+export type WarehouseInventory = CommodityInventory;
 
 export type LogisticsSnapshot = Readonly<{
   routes: readonly LogisticsRoute[];
@@ -161,6 +162,8 @@ export function connectProducerToWarehouse(
     farm: "Harvest Road",
     lumber_camp: "Northwood Road",
     quarry: "Ridge Road",
+    iron_mine: "Iron Road",
+    workshop: "Workshop Road",
   } as const;
   const route: LogisticsRoute = {
     id: `${producer.id}-to-${warehouse.id}`,
@@ -207,6 +210,8 @@ export function withStartingLogistics(world: WorldSnapshot): WorldSnapshot {
     farm: "Harvest Road",
     lumber_camp: "Northwood Road",
     quarry: "Ridge Road",
+    iron_mine: "Iron Road",
+    workshop: "Workshop Road",
   } as const;
   const logisticsRoutes: LogisticsRoute[] = [];
   const roadIndex = new Map(world.roads.map((road) => [keyOf(road), road]));
