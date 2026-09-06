@@ -24,6 +24,21 @@ A desktop-first browser economy game built with Next.js 16, React 19, TypeScript
 
 The world remains a surface height field, not a collection of individual voxels. No economy, construction, resources, or 3D dependencies were added.
 
+## Milestone 3: starting settlement
+
+- Novagrad starts with 10 citizens, one 2×2 Settler Camp, four 1×1 houses, and a 2×2 warehouse.
+- Deterministic placement finds a naturally flat, dry 9×9 site near the world center, without changing terrain. Worlds without a suitable site omit the settlement.
+- Logical footprints, building types, quarter-turn orientation, settlement identity, and population live in the domain snapshot. Population is initial scenario data, not a running simulation.
+- Connected road cells form a junction with building access. Road strips derive connections from adjacent road cells.
+- Primitive shaded buildings use separate presentation definitions. Building roof and wall picking share geometry and draw order with rendering.
+- A world-anchored Novagrad label selects the camp. The settlement overview shows population and building counts, with a Go to settlement control; the initial camera and reset view focus the settlement.
+- The inspector identifies buildings and shows their purpose, footprint, settlement, and origin coordinates.
+- Milestone 2 resources and farmland remain deferred. Construction, inventory, production, and population growth are not implemented.
+
+`world/domain/settlement.ts` owns starting settlement generation and building definitions. `presentation/world/buildings.ts` owns primitive building appearance. The server page composes terrain and settlement into one serializable snapshot.
+
+Ten automated tests include footprint validity, unchanged terrain, road connectivity, deterministic settlement placement, safe handling of unavailable sites, and roof/wall picking across zoom levels. Browser checks cover warehouse inspection, panning, and zooming with a selected building.
+
 ## Run and verify
 
 ```bash
