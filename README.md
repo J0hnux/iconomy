@@ -1,36 +1,36 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# OpenWorld Economy
 
-## Getting Started
+A desktop-first browser economy game built with Next.js 16, React 19, TypeScript, and Tailwind CSS 4.
 
-First, run the development server:
+## Milestone 0: spatial foundation
+
+- Deterministic 128 × 128 map with grassland, a river, and a coast (`prototype-001` seed).
+- Logical x/y/z coordinates; all terrain is at z = 0 for this milestone.
+- Native Canvas 2:1 isometric rendering with high-DPI support and offscreen tile draw rejection.
+- Drag, WASD, or arrow-key camera panning; pointer-anchored wheel zoom and zoom buttons (25–300%).
+- Click a tile for selection outline, terrain, x/y/z, and its logical 32 × 32-cell chunk address.
+- Reset camera, focus selected tile, and toggle the grid.
+- Keyboard map controls: Enter inspects the center, Escape clears selection, +/- zooms. Focus the map first.
+- Responsive HTML/Tailwind inspector and controls. No rendering dependencies or additional global style rules; system font stacks allow offline builds.
+
+## Run and verify
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run lint
+npm test
+npm run build
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000. Drag the map, zoom at a river tile, select it, and verify selection remains attached when panning, zooming, or resizing. Dragging must not select a new tile. Click outside the world to clear selection. Check keyboard controls and focus-selected behavior.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Architecture and scope
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+`world/domain/world.ts` generates a serializable, read-only semantic snapshot on the server page. Logical cells never contain screen positions or renderer objects. Chunks are currently derived addresses, not streamed storage.
 
-## Learn More
+`presentation/world/projection.ts` owns coordinate transforms, bounded camera operations, and flat tile picking. `render.ts` maps semantic terrain to primitive Canvas diamonds. `world-map.tsx` owns presentation-only camera, selection, and UI state. Rendering runs when those inputs change rather than in a perpetual simulation loop.
 
-To learn more about Next.js, take a look at the following resources:
+The world can later feed another renderer without changing its coordinates. Elevated terrain and elevated polygon picking belong to Milestone 1. This milestone does not implement economic mutations, persistence, multiplayer, or authentication; future authentication must use NextAuth and future economic commands must be validated by the server. No browser state here represents authoritative money, production, or ownership.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The blueprint and reference image describe the long-term destination, not the current art target.
