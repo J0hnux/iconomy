@@ -29,6 +29,7 @@ import {
   type ProductionState,
   type ProducerType,
 } from "../domain/production";
+import { describePopulation } from "../domain/population";
 import {
   buildingDefinitions,
   withStartingSettlement,
@@ -370,10 +371,12 @@ export class LocalGameSimulation {
         (candidate.buildingId === buildingId ? 0 : candidate.assignedWorkers),
       0,
     );
-    if (
-      assignedElsewhere + workers >
-      (this.state.world.settlement?.population ?? 0)
-    )
+    const workingAgePopulation = describePopulation(
+      this.state.world,
+      0,
+      this.state.warehouseInventory.food,
+    ).workingAgePopulation;
+    if (assignedElsewhere + workers > workingAgePopulation)
       return this.failure(
         422,
         "Novagrad does not have enough available workers.",
@@ -575,17 +578,19 @@ export class LocalGameSimulation {
       const site = state ? describeProduction(state, building) : null;
       return site ? [site] : [];
     });
-    const population = this.state.world.settlement?.population ?? 0;
-    const assignedWorkers = sites.reduce(
+    const employedWorkers = sites.reduce(
       (total, site) => total + site.assignedWorkers,
       0,
+    );
+    const population = describePopulation(
+      this.state.world,
+      employedWorkers,
+      this.state.warehouseInventory.food,
     );
     const listings = this.marketListings();
     return {
       simulationTime: this.state.simulationTime,
       population,
-      assignedWorkers,
-      availableWorkers: population - assignedWorkers,
       sites,
       logistics: {
         routes: this.state.world.logisticsRoutes ?? [],

@@ -65,8 +65,18 @@ export function PlayerHud({
             ],
             ["Company", "Novagrad enterprise"],
             ["City", world.settlement?.name ?? "Unsettled"],
-            ["Population", world.settlement?.population ?? 0],
-            ["Free workers", snapshot?.availableWorkers ?? "—"],
+            [
+              "Population",
+              snapshot?.population.totalPopulation ??
+                world.settlement?.population ??
+                0,
+            ],
+            ["Working age", snapshot?.population.workingAgePopulation ?? "—"],
+            ["Employed", snapshot?.population.employedWorkers ?? "—"],
+            ["Unemployed", snapshot?.population.unemployedWorkers ?? "—"],
+            ["Free workers", snapshot?.population.availableWorkers ?? "—"],
+            ["Housing capacity", snapshot?.population.housingCapacity ?? "—"],
+            ["Food supply", snapshot?.population.foodSupply ?? "—"],
           ].map(([label, value]) => (
             <div key={label} className="flex justify-between gap-2">
               <dt className="text-slate-400">{label}</dt>
@@ -268,8 +278,12 @@ export function BottomHud({
         <h2 className="mb-3 text-sm font-semibold">Novagrad Economy</h2>
         <dl className="space-y-2 text-xs">
           {[
-            ["Population", snapshot?.population ?? "—"],
-            ["Workers assigned", snapshot?.assignedWorkers ?? "—"],
+            ["Population", snapshot?.population.totalPopulation ?? "—"],
+            ["Working age", snapshot?.population.workingAgePopulation ?? "—"],
+            ["Employed", snapshot?.population.employedWorkers ?? "—"],
+            ["Unemployed", snapshot?.population.unemployedWorkers ?? "—"],
+            ["Housing capacity", snapshot?.population.housingCapacity ?? "—"],
+            ["Food supply", snapshot?.population.foodSupply ?? "—"],
             [
               "Producing sites",
               snapshot

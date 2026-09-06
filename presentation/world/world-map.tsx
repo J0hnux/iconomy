@@ -497,7 +497,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestones 0–11
+              Prototype / Milestones 0–12
             </p>
           </div>
         </div>
@@ -1059,8 +1059,8 @@ export default function WorldMap({
                   </div>
                   {production && (
                     <span className="text-xs text-slate-400">
-                      {production.availableWorkers} / {production.population}{" "}
-                      free
+                      {production.population.availableWorkers} /{" "}
+                      {production.population.workingAgePopulation} free
                     </span>
                   )}
                 </div>
@@ -1403,7 +1403,7 @@ export default function WorldMap({
                     productionBusy ||
                     selectedProduction.assignedWorkers >=
                       selectedProduction.requiredWorkers ||
-                    (production?.availableWorkers ?? 0) === 0
+                    (production?.population.availableWorkers ?? 0) === 0
                   }
                   onClick={() =>
                     void updateProduction(

@@ -40,7 +40,7 @@ The renderer maps semantic terrain and resource IDs to primitives. Trees and ore
 
 - Novagrad starts with 10 citizens, one 2×2 Settler Camp, four 1×1 houses, and a 2×2 warehouse.
 - Deterministic placement finds a naturally flat, dry 9×9 site near the world center, without changing terrain. Worlds without a suitable site omit the settlement.
-- Logical footprints, building types, quarter-turn orientation, settlement identity, and population live in the domain snapshot. Population is initial scenario data, not a running simulation.
+- Logical footprints, building types, quarter-turn orientation, settlement identity, and total population live in the domain snapshot. Milestone 12 derives the initial population-needs read model from this authoritative state.
 - Connected road cells form a junction with building access. Road strips derive connections from adjacent road cells.
 - Primitive shaded buildings use separate presentation definitions. Building roof and wall picking share geometry and draw order with rendering.
 - A world-anchored Novagrad label selects the camp. The settlement overview shows population and building counts, with a Go to settlement control; the initial camera and reset view focus the settlement.
@@ -144,6 +144,19 @@ For renderer-readiness verification, locate the Lumber Camp and switch between P
 
 For local-authority verification, reload the page, assign workers, dispatch output, wait for its physical arrival, sell warehouse goods, and construct a building. Confirm each action updates immediately without requests to `/api/*`, rejected commands leave state unchanged, and a page reload starts a fresh local run.
 
+## Milestone 12: population needs
+
+- The local simulation now publishes one aggregate population snapshot with total population, working-age population, employed workers, unemployed workers, available workers, housing capacity, and warehouse food supply.
+- Working-age population is the deterministic whole-number floor of 60% of total population. Available workers and unemployed workers both represent working-age citizens without a production assignment.
+- The starting Settler Camp provides housing for 4 citizens and each House provides housing for 2, for a starting capacity of 12. Constructing a House immediately raises the authoritative capacity by 2 through the existing command and read-model flow.
+- Food supply is the food physically present in Novagrad Warehouse. In-transit or producer-stored food is excluded until it arrives, and a market sale reduces the displayed supply through the existing inventory transition.
+- Worker assignment validation now uses working-age population instead of total population. With 10 citizens, 6 are working age; the starting Farm and Quarry employ 5, leaving 1 worker available.
+- Total population remains fixed in this milestone. Food consumption, population growth, migration, happiness, education, health, crime, social classes, and housing penalties remain future systems.
+
+`world/domain/population.ts` owns the pure aggregate policy and derived snapshot. `world/simulation/game-simulation.ts` composes it from authoritative world, production, and warehouse state. React and Canvas only consume the resulting read model.
+
+For population verification, open the player or economy HUD and confirm 10 total citizens, 6 working-age citizens, 5 employed, 1 unemployed/available, 12 housing capacity, and the current warehouse food count. Build a House and confirm capacity becomes 14. Try to assign more than 6 workers across all producers and confirm the command is rejected. Wait for food to arrive or sell food and confirm food supply follows warehouse inventory.
+
 ## Run and verify
 
 ```bash
@@ -170,6 +183,6 @@ For the market, choose Market in the top navigation. Compare each price trend an
 
 `presentation/world/projection.ts` owns coordinate transforms, bounded camera operations, visible chunk selection, and elevated terrain face picking. `buildings.ts` owns swappable primitive visual sets and derives geometry from semantic building positions. `render.ts` maps the visible semantic scene and selected visual set to shaded Canvas polygons. `world-map.tsx` owns presentation-only camera, selection, visual-profile, and UI state. Rendering runs when those inputs change rather than in a perpetual simulation loop.
 
-The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry, visible scene selection, and depth ordering remain presentation responsibilities. Picking scans only visible chunk cells in reverse painter order with a bounds check. Construction, production, shipments, warehouse arrivals, market ticks, and sales cross the local simulation command and validation boundary. Browser persistence, competing companies, and ownership remain unimplemented.
+The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry, visible scene selection, and depth ordering remain presentation responsibilities. Picking scans only visible chunk cells in reverse painter order with a bounds check. Construction, production, shipments, warehouse arrivals, market ticks, sales, and worker assignments cross the local simulation command and validation boundary. The aggregate population-needs snapshot is derived from accepted world, assignments, and warehouse inventory; it has no renderer state. Browser persistence, competing companies, and ownership remain unimplemented.
 
 The blueprint and reference image describe the long-term destination, not the current art target.

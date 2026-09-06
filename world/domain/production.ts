@@ -7,6 +7,7 @@ import {
 import type { SurfaceCell, WorldPosition, WorldSnapshot } from "./world";
 import type { LogisticsSnapshot } from "./logistics";
 import type { MarketSnapshot } from "./market";
+import type { PopulationSnapshot } from "./population";
 
 export const producerTypes = [
   "farm",
@@ -73,9 +74,7 @@ export type ProductionSite = ProductionState &
 
 export type ProductionSnapshot = Readonly<{
   simulationTime: number;
-  population: number;
-  assignedWorkers: number;
-  availableWorkers: number;
+  population: PopulationSnapshot;
   sites: readonly ProductionSite[];
   logistics: LogisticsSnapshot;
   market: MarketSnapshot;

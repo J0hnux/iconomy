@@ -502,6 +502,7 @@ test("local simulation enforces construction revision and authoritative validati
   assert.equal(accepted.ok, true);
   assert.equal(accepted.readModel.revision, 1);
   assert.equal(accepted.building.id, "player-1");
+  assert.equal(accepted.readModel.economy.population.housingCapacity, 14);
   const stale = simulation.execute(
     {
       type: "construct",
@@ -527,6 +528,36 @@ test("local simulation enforces construction revision and authoritative validati
     1_000,
   );
   assert.equal(invalid.status, 422);
+});
+
+test("population needs derive deterministically from authoritative world and economy state", () => {
+  const { describePopulation } = require("../world/domain/population.ts");
+  const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const startingWorld = createStartingWorld();
+  assert.deepEqual(describePopulation(startingWorld, 5, 8), {
+    totalPopulation: 10,
+    workingAgePopulation: 6,
+    availableWorkers: 1,
+    employedWorkers: 5,
+    unemployedWorkers: 1,
+    housingCapacity: 12,
+    foodSupply: 8,
+  });
+  assert.throws(() => describePopulation(startingWorld, 7, 8), RangeError);
+  assert.throws(() => describePopulation(startingWorld, 5, -1), RangeError);
+
+  const simulation = new LocalGameSimulation(startingWorld, 1_000);
+  const initialEconomy = simulation.read(1_000).economy;
+  assert.deepEqual(
+    initialEconomy.population,
+    describePopulation(startingWorld, 5, 8),
+  );
+  const initialFoodShipment = initialEconomy.logistics.shipments.find(
+    (shipment) => shipment.cargo.commodity === "food",
+  );
+  const arrived = simulation.read(initialFoodShipment.arrivalTime).economy
+    .population;
+  assert.equal(arrived.foodSupply, 12);
 });
 
 test("starting producers occupy level resource footprints without changing terrain", () => {
@@ -586,11 +617,30 @@ test("production advances from explicit simulation time and explains idle states
     advanced.sites.find((site) => site.type === "lumber_camp").progressMs,
     0,
   );
+  const overCapacity = simulation.execute(
+    { type: "set_workers", buildingId: lumber.buildingId, workers: 2 },
+    9_000,
+  );
+  assert.equal(overCapacity.status, 422);
+  const released = simulation.execute(
+    { type: "set_workers", buildingId: farm.buildingId, workers: 1 },
+    9_000,
+  );
+  assert.equal(released.ok, true);
   const staffed = simulation.execute(
     { type: "set_workers", buildingId: lumber.buildingId, workers: 2 },
     9_000,
   );
   assert.equal(staffed.ok, true);
+  assert.deepEqual(staffed.readModel.economy.population, {
+    totalPopulation: 10,
+    workingAgePopulation: 6,
+    availableWorkers: 0,
+    employedWorkers: 6,
+    unemployedWorkers: 0,
+    housingCapacity: 12,
+    foodSupply: 8,
+  });
   assert.equal(
     staffed.readModel.economy.sites.find((site) => site.type === "lumber_camp").status,
     "running",
@@ -634,12 +684,25 @@ test("local authority is deterministic, monotonic, and exports versioned state",
   const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
   const first = new LocalGameSimulation(createStartingWorld(), 5_000);
   const second = new LocalGameSimulation(createStartingWorld(), 5_000);
-  const lumberId = first
-    .read(5_000)
-    .economy.sites.find((site) => site.type === "lumber_camp").buildingId;
-  const command = { type: "set_workers", buildingId: lumberId, workers: 2 };
-  first.execute(command, 6_000);
-  second.execute(command, 6_000);
+  const initialSites = first.read(5_000).economy.sites;
+  const lumberId = initialSites.find(
+    (site) => site.type === "lumber_camp",
+  ).buildingId;
+  const farmId = initialSites.find((site) => site.type === "farm").buildingId;
+  const releaseCommand = {
+    type: "set_workers",
+    buildingId: farmId,
+    workers: 1,
+  };
+  const staffCommand = {
+    type: "set_workers",
+    buildingId: lumberId,
+    workers: 2,
+  };
+  first.execute(releaseCommand, 6_000);
+  second.execute(releaseCommand, 6_000);
+  first.execute(staffCommand, 6_000);
+  second.execute(staffCommand, 6_000);
   first.read(16_000);
   second.read(16_000);
   assert.deepEqual(first.exportSave(), second.exportSave());
@@ -803,6 +866,7 @@ test("market sales remove warehouse goods, credit cash, and create events", () =
   assert.equal(sale.ok, true);
   assert.equal(sale.revenueCents, food.priceCents * 2);
   assert.equal(sale.readModel.economy.logistics.warehouseInventory.food, 6);
+  assert.equal(sale.readModel.economy.population.foodSupply, 6);
   assert.equal(
     sale.readModel.economy.market.cashCents,
     initial.market.cashCents + sale.revenueCents,
