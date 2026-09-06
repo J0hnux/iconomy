@@ -5,6 +5,8 @@ import type { SurfaceCell, WorldSnapshot } from "../../world/domain/world";
 import { orderedCells, terrainFaces, toScreen, TILE_WIDTH, TILE_HEIGHT, ELEVATION_HEIGHT, type Camera, type Viewport } from "./projection";
 
 const grass = ["#668568", "#6c8b6d", "#718e6c", "#68866a", "#748f70"];
+const forestGround = ["#3e6748", "#456f4d", "#49764f", "#3b6244", "#527a55"];
+const farmland = ["#9a8b50", "#a39351", "#8d8148", "#aa9652", "#93864d"];
 const water = ["#28667d", "#2b6d83", "#2c7187", "#306d82", "#296a81"];
 const rock = ["#89918b", "#92988f", "#838d88", "#9ba098", "#8e9791"];
 
@@ -22,7 +24,7 @@ export function drawWorld(ctx: CanvasRenderingContext2D, world: WorldSnapshot, c
     const halfWidth = TILE_WIDTH * camera.zoom / 2;
     // Include the full cliff height: a top may be offscreen while its side is visible.
     if (!building && (p.x + halfWidth < 0 || p.x - halfWidth > viewport.width || p.y + (TILE_HEIGHT + cell.z * ELEVATION_HEIGHT) * camera.zoom < 0 || p.y > viewport.height)) continue;
-    const palette = cell.terrain === "water" ? water : cell.terrain === "mountain" ? rock : grass;
+    const palette = cell.terrain === "water" ? water : cell.terrain === "mountain" ? rock : cell.terrain === "forest_ground" ? forestGround : cell.terrain === "farmland" ? farmland : grass;
     for (const face of terrainFaces(cell, world, camera, viewport)) {
       ctx.beginPath();
       face.points.forEach((point, index) => index === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y));
@@ -61,6 +63,42 @@ export function drawWorld(ctx: CanvasRenderingContext2D, world: WorldSnapshot, c
         ctx.lineWidth = 2;
         ctx.stroke();
       }
+    }
+    if (camera.zoom >= 0.45 && cell.terrain === "farmland") {
+      ctx.strokeStyle = "#d8c66b";
+      ctx.lineWidth = Math.max(1, camera.zoom);
+      for (const offset of [0.25, 0.5, 0.75]) {
+        const start = toScreen({ x: cell.x + 0.12, y: cell.y + offset, z: cell.z + 0.02 }, camera, viewport);
+        const end = toScreen({ x: cell.x + 0.88, y: cell.y + offset, z: cell.z + 0.02 }, camera, viewport);
+        ctx.beginPath(); ctx.moveTo(start.x, start.y); ctx.lineTo(end.x, end.y); ctx.stroke();
+      }
+    }
+    if (camera.zoom >= 0.55 && cell.terrain === "forest_ground" && (cell.x * 13 + cell.y * 7) % 3 === 0) {
+      const base = toScreen({ x: cell.x + 0.5, y: cell.y + 0.5, z: cell.z }, camera, viewport);
+      const scale = camera.zoom;
+      ctx.fillStyle = "#5e4630";
+      ctx.fillRect(base.x - 2 * scale, base.y - 10 * scale, 4 * scale, 11 * scale);
+      ctx.fillStyle = "#174b31";
+      ctx.beginPath();
+      ctx.moveTo(base.x, base.y - 27 * scale);
+      ctx.lineTo(base.x + 10 * scale, base.y - 9 * scale);
+      ctx.lineTo(base.x, base.y - 4 * scale);
+      ctx.lineTo(base.x - 10 * scale, base.y - 9 * scale);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = "#103923"; ctx.lineWidth = scale; ctx.stroke();
+    }
+    if (camera.zoom >= 0.5 && cell.resourceNodeId && cell.terrain === "mountain" && (cell.x * 5 + cell.y * 11) % 4 === 0) {
+      const center = toScreen({ x: cell.x + 0.5, y: cell.y + 0.5, z: cell.z + 0.04 }, camera, viewport);
+      const scale = camera.zoom;
+      ctx.fillStyle = cell.resourceNodeId === "iron-heights" ? "#69483d" : "#c4cbc6";
+      ctx.beginPath();
+      ctx.moveTo(center.x, center.y - 8 * scale);
+      ctx.lineTo(center.x + 8 * scale, center.y - 2 * scale);
+      ctx.lineTo(center.x + 4 * scale, center.y + 5 * scale);
+      ctx.lineTo(center.x - 7 * scale, center.y + 4 * scale);
+      ctx.lineTo(center.x - 9 * scale, center.y - 2 * scale);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = "#3f4845"; ctx.lineWidth = scale; ctx.stroke();
     }
     if (building) {
       for (const face of buildingFaces(building, camera, viewport)) {
