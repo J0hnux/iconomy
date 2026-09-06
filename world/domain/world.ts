@@ -1,6 +1,7 @@
+import type { Building, Settlement } from "./settlement";
 export type WorldPosition = Readonly<{ x: number; y: number; z: number }>;
 export type SurfaceCell = WorldPosition & Readonly<{ terrain: "grassland" | "water" | "mountain" }>;
-export type WorldSnapshot = Readonly<{ seed: string; size: number; chunkSize: number; cells: readonly SurfaceCell[] }>;
+export type WorldSnapshot = Readonly<{ seed: string; size: number; chunkSize: number; cells: readonly SurfaceCell[]; settlement?: Settlement; buildings?: readonly Building[]; roads?: readonly WorldPosition[] }>;
 
 // Semantic world data; never browser objects or visual coordinates.
 export function generateWorld(seed = "prototype-001", size = 128): WorldSnapshot {
