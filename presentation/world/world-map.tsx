@@ -38,6 +38,11 @@ import {
 } from "./projection";
 import { drawLogistics, drawWorld, type PlacementPreview } from "./render";
 import { PlayerHud, WorldMinimap, BottomHud } from "./hud";
+import {
+  buildingVisualProfiles,
+  defaultBuildingVisualProfile,
+  type BuildingVisualProfileId,
+} from "./buildings";
 
 const button =
   "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-amber-200 disabled:opacity-30";
@@ -111,6 +116,9 @@ export default function WorldMap({
   });
   const [grid, setGrid] = useState(true);
   const [showChunks, setShowChunks] = useState(false);
+  const [buildingVisualProfile, setBuildingVisualProfile] =
+    useState<BuildingVisualProfileId>(defaultBuildingVisualProfile);
+  const buildingVisualSet = buildingVisualProfiles[buildingVisualProfile];
   const [tool, setTool] = useState<"inspect" | "build">("inspect");
   const [buildingType, setBuildingType] = useState<BuildingType>("house");
   const [rotation, setRotation] = useState<BuildingRotation>("north");
@@ -196,6 +204,7 @@ export default function WorldMap({
       production,
       scene,
       showChunks,
+      buildingVisualSet,
     );
   }, [
     world,
@@ -207,6 +216,7 @@ export default function WorldMap({
     production,
     scene,
     showChunks,
+    buildingVisualSet,
   ]);
 
   useEffect(() => {
@@ -513,7 +523,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestones 0–8
+              Prototype / Milestones 0–10
             </p>
           </div>
         </div>
@@ -607,6 +617,7 @@ export default function WorldMap({
                     viewport,
                     world,
                     scene,
+                    buildingVisualSet,
                   ),
                 );
               }
@@ -643,6 +654,7 @@ export default function WorldMap({
                   viewport,
                   world,
                   scene,
+                  buildingVisualSet,
                 );
                 if (tool === "build") void confirmPlacement(candidate);
                 else setSelected(candidate);
@@ -684,6 +696,7 @@ export default function WorldMap({
                     viewport,
                     world,
                     scene,
+                    buildingVisualSet,
                   );
                   if (tool === "build") void confirmPlacement(candidate);
                   else setSelected(candidate);
@@ -1572,6 +1585,24 @@ export default function WorldMap({
                 className="size-4 accent-cyan-300"
               />
             </label>
+            <label className="mt-4 block text-sm text-slate-400">
+              <span className="mb-2 block">Lumber Camp primitive</span>
+              <select
+                value={buildingVisualProfile}
+                onChange={(event) =>
+                  setBuildingVisualProfile(
+                    event.target.value as BuildingVisualProfileId,
+                  )
+                }
+                className="w-full rounded-lg border border-white/15 bg-[#142630] px-3 py-2 text-sm text-slate-100 outline-none focus-visible:ring-2 focus-visible:ring-cyan-300"
+              >
+                <option value="primitiveA">Primitive A · timber shed</option>
+                <option value="primitiveB">Primitive B · forest depot</option>
+              </select>
+            </label>
+            <p className="mt-2 text-[10px] leading-4 text-slate-500">
+              Presentation test: geometry and palette swap without changing production.
+            </p>
             <p className="mt-3 font-mono text-[10px] text-cyan-200/80">
               Visible: {scene.chunks.length} / {world.chunks.length} chunks ·{" "}
               {scene.cells.length.toLocaleString("en-US")} tiles

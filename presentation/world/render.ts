@@ -3,7 +3,12 @@ import type {
   PlacementRequest,
   PlacementValidation,
 } from "../../world/domain/construction";
-import { buildingFaces, buildingsByDepth, buildingVisuals } from "./buildings";
+import {
+  buildingFaces,
+  buildingsByDepth,
+  buildingVisuals,
+  type BuildingVisualSet,
+} from "./buildings";
 import type { SurfaceCell, WorldSnapshot } from "../../world/domain/world";
 import type { ProductionSnapshot } from "../../world/domain/production";
 import { shipmentPosition } from "../../world/domain/logistics";
@@ -42,6 +47,7 @@ export function drawWorld(
   production: ProductionSnapshot | null = null,
   scene: VisibleScene = visibleScene(world, camera, viewport),
   showChunks = false,
+  visuals: BuildingVisualSet = buildingVisuals,
 ) {
   ctx.clearRect(0, 0, viewport.width, viewport.height);
   const buildings = buildingsByDepth(world);
@@ -227,7 +233,7 @@ export function drawWorld(
       ctx.stroke();
     }
     if (building) {
-      for (const face of buildingFaces(building, camera, viewport)) {
+      for (const face of buildingFaces(building, camera, viewport, visuals)) {
         ctx.beginPath();
         face.points.forEach((point, index) =>
           index === 0
@@ -242,7 +248,7 @@ export function drawWorld(
         ctx.lineWidth = selectedBuilding?.id === building.id ? 2 : 0.7;
         ctx.stroke();
       }
-      const roof = buildingFaces(building, camera, viewport)[2].points;
+      const roof = buildingFaces(building, camera, viewport, visuals)[2].points;
       const center = roof.reduce(
         (sum, point) => ({ x: sum.x + point.x / 4, y: sum.y + point.y / 4 }),
         { x: 0, y: 0 },
@@ -250,7 +256,7 @@ export function drawWorld(
       ctx.fillStyle = "#16272b";
       ctx.font = `bold ${Math.max(7, 8 * camera.zoom)}px Arial`;
       ctx.textAlign = "center";
-      ctx.fillText(buildingVisuals[building.type].mark, center.x, center.y + 3);
+      ctx.fillText(visuals[building.type].mark, center.x, center.y + 3);
       const site = productionByBuilding.get(building.id);
       if (site) {
         const badgeY = center.y - Math.max(15, 18 * camera.zoom);

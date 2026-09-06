@@ -347,6 +347,31 @@ test("building roof and wall picking return the building origin after zoom", () 
     }
 });
 
+test("lumber camp visual profiles swap presentation without changing domain state", () => {
+  const { withStartingSettlement } = require("../world/domain/settlement.ts");
+  const { withStartingProduction } = require("../world/domain/production.ts");
+  const { buildingFaces, buildingVisualProfiles } = require("../presentation/world/buildings.ts");
+  const settled = withStartingProduction(withStartingSettlement(world));
+  const lumberCamp = settled.buildings.find((building) => building.type === "lumber_camp");
+  assert.ok(lumberCamp);
+  assert.deepEqual(buildingVisualProfiles.primitiveA.house, buildingVisualProfiles.primitiveB.house);
+  assert.notDeepEqual(buildingVisualProfiles.primitiveA.lumber_camp, buildingVisualProfiles.primitiveB.lumber_camp);
+  const semanticBuilding = structuredClone(lumberCamp);
+  const camera = { focus: focusCell(lumberCamp), zoom: 2 };
+  const facesA = buildingFaces(lumberCamp, camera, viewport, buildingVisualProfiles.primitiveA);
+  const facesB = buildingFaces(lumberCamp, camera, viewport, buildingVisualProfiles.primitiveB);
+  assert.notDeepEqual(facesA, facesB);
+  assert.deepEqual(lumberCamp, semanticBuilding);
+  const roofCenter = facesB[2].points.reduce(
+    (sum, point) => ({ x: sum.x + point.x / 4, y: sum.y + point.y / 4 }),
+    { x: 0, y: 0 },
+  );
+  assert.equal(
+    pickCell(roofCenter, camera, viewport, settled, undefined, buildingVisualProfiles.primitiveB),
+    settled.cells[lumberCamp.y * settled.size + lumberCamp.x],
+  );
+});
+
 test("no suitable site leaves terrain unchanged and omits the settlement", () => {
   const { withStartingSettlement } = require("../world/domain/settlement.ts");
   const tiny = generateWorld("tiny", 8);

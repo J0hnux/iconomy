@@ -2,8 +2,19 @@ import { footprintOf, type Building } from "../../world/domain/settlement";
 import type { WorldSnapshot } from "../../world/domain/world";
 import { toScreen, type Camera, type Viewport } from "./projection";
 
-// Visual definitions can change without changing building footprints or settlement data.
-export const buildingVisuals = {
+export type BuildingVisual = Readonly<{
+  height: number;
+  inset?: number;
+  top: string;
+  left: string;
+  right: string;
+  mark: string;
+}>;
+export type BuildingVisualSet = Readonly<Record<Building["type"], BuildingVisual>>;
+
+// Visual definitions are presentation input. They never change footprints,
+// recipes, inventory, worker assignments, or any other domain state.
+const primitiveA = {
   camp: {
     height: 1.7,
     top: "#ddc393",
@@ -53,7 +64,27 @@ export const buildingVisuals = {
     right: "#808782",
     mark: "STONE",
   },
-};
+} satisfies BuildingVisualSet;
+
+export const buildingVisualProfiles = {
+  primitiveA,
+  primitiveB: {
+    ...primitiveA,
+    lumber_camp: {
+      height: 1.9,
+      inset: 0.24,
+      top: "#c38d4d",
+      left: "#3d5137",
+      right: "#577048",
+      mark: "LOGS",
+    },
+  },
+} as const satisfies Readonly<Record<string, BuildingVisualSet>>;
+
+export type BuildingVisualProfileId = keyof typeof buildingVisualProfiles;
+export const defaultBuildingVisualProfile: BuildingVisualProfileId = "primitiveA";
+export const buildingVisuals: BuildingVisualSet = buildingVisualProfiles[defaultBuildingVisualProfile];
+
 export function buildingDepthCell(building: Building) {
   const footprint = footprintOf(building.type, building.rotation);
   return {
@@ -65,13 +96,15 @@ export function buildingFaces(
   building: Building,
   camera: Camera,
   viewport: Viewport,
+  visuals: BuildingVisualSet = buildingVisuals,
 ) {
   const footprint = footprintOf(building.type, building.rotation);
-  const visual = buildingVisuals[building.type];
-  const x = building.x + 0.12,
-    y = building.y + 0.12;
-  const right = building.x + footprint.width - 0.12,
-    bottom = building.y + footprint.depth - 0.12;
+  const visual = visuals[building.type];
+  const inset = visual.inset ?? 0.12;
+  const x = building.x + inset,
+    y = building.y + inset;
+  const right = building.x + footprint.width - inset,
+    bottom = building.y + footprint.depth - inset;
   const at = (x: number, y: number, z: number) =>
     toScreen({ x, y, z }, camera, viewport);
   const z = building.z,

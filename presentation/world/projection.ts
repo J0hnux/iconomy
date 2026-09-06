@@ -1,4 +1,9 @@
-import { buildingFaces, buildingsByDepth } from "./buildings";
+import {
+  buildingFaces,
+  buildingsByDepth,
+  buildingVisuals,
+  type BuildingVisualSet,
+} from "./buildings";
 import {
   chunkOf,
   chunkRegions,
@@ -271,6 +276,7 @@ export function pickCell(
   viewport: Viewport,
   world: WorldSnapshot,
   scene?: VisibleScene,
+  visuals: BuildingVisualSet = buildingVisuals,
 ) {
   const insideViewport =
     point.x >= 0 &&
@@ -286,7 +292,7 @@ export function pickCell(
     const building = buildings.get(`${cell.x},${cell.y}`);
     if (
       building &&
-      buildingFaces(building, camera, viewport).some((face) =>
+      buildingFaces(building, camera, viewport, visuals).some((face) =>
         containsPoint(point, face.points),
       )
     )
