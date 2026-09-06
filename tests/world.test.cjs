@@ -223,3 +223,49 @@ test('server construction sessions enforce revision and authoritative validation
   const invalid = constructForSession('second-session', 0, { ...placement, x: -5 });
   assert.equal(invalid.status, 422);
 });
+
+test('starting producers occupy level resource footprints without changing terrain', () => {
+  const { withStartingSettlement, footprintOf } = require('../world/domain/settlement.ts');
+  const { withStartingProduction, producerTypes } = require('../world/domain/production.ts');
+  const settled = withStartingSettlement(world);
+  const result = withStartingProduction(settled);
+  const producers = result.buildings.filter(building => producerTypes.includes(building.type));
+  assert.deepEqual(producers.map(building => building.type).sort(), ['farm', 'lumber_camp', 'quarry']);
+  for (const building of producers) {
+    const footprint = footprintOf(building.type, building.rotation);
+    const cells = [];
+    for (let dy = 0; dy < footprint.depth; dy++) for (let dx = 0; dx < footprint.width; dx++) cells.push(result.cells[(building.y + dy) * result.size + building.x + dx]);
+    assert.ok(cells.every(cell => cell.z === building.z));
+    if (building.type === 'farm') assert.ok(cells.every(cell => cell.terrain === 'farmland'));
+    if (building.type === 'lumber_camp') assert.ok(cells.every(cell => cell.resourceNodeId === 'northwood'));
+    if (building.type === 'quarry') assert.ok(cells.every(cell => cell.resourceNodeId === 'stone-ridge'));
+  }
+  assert.equal(result.cells, settled.cells);
+  assert.deepEqual(withStartingProduction(settled), result);
+});
+
+test('production advances from elapsed server time and explains idle states', () => {
+  const { clearProductionSessionsForTests, collectProduction, productionForSession, setProductionWorkers } = require('../world/server/production-store.ts');
+  clearProductionSessionsForTests();
+  const initial = productionForSession('production-test', 1_000);
+  const farm = initial.sites.find(site => site.type === 'farm');
+  const lumber = initial.sites.find(site => site.type === 'lumber_camp');
+  const quarry = initial.sites.find(site => site.type === 'quarry');
+  assert.equal(farm.status, 'running');
+  assert.equal(lumber.status, 'missing_workers');
+  assert.match(lumber.statusReason, /Needs 2 more workers/);
+  assert.equal(quarry.status, 'storage_full');
+  assert.match(quarry.statusReason, /Collect stone/);
+  const advanced = productionForSession('production-test', 9_000);
+  assert.equal(advanced.sites.find(site => site.type === 'farm').stored, 4);
+  assert.equal(advanced.sites.find(site => site.type === 'lumber_camp').progressMs, 0);
+  const staffed = setProductionWorkers('production-test', lumber.buildingId, 2, 9_000);
+  assert.equal(staffed.ok, true);
+  assert.equal(staffed.snapshot.sites.find(site => site.type === 'lumber_camp').status, 'running');
+  assert.equal(productionForSession('production-test', 19_000).sites.find(site => site.type === 'lumber_camp').stored, 3);
+  const collected = collectProduction('production-test', quarry.buildingId, 19_000);
+  assert.equal(collected.ok, true);
+  assert.equal(collected.collected, 12);
+  assert.equal(collected.snapshot.sites.find(site => site.type === 'quarry').status, 'running');
+  assert.equal(setProductionWorkers('production-test', farm.buildingId, 99, 19_000).status, 422);
+});

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { constructibleBuildingTypes, validatePlacement, type PlacementRequest } from "@/world/domain/construction";
 import { buildingAt, buildingDefinitions, footprintOf, type BuildingRotation, type BuildingType } from "@/world/domain/settlement";
+import type { ProductionSnapshot, ProductionSite } from "@/world/domain/production";
 import { chunkOf, resourceAt, type SurfaceCell, type TerrainType, type WorldSnapshot } from "@/world/domain/world";
 import { toScreen, focusCell, panCamera, pickCell, zoomCamera, type Camera, type Viewport } from "./projection";
 import { drawWorld, type PlacementPreview } from "./render";
@@ -32,6 +33,9 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
   const [revision, setRevision] = useState(0);
   const [buildMessage, setBuildMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [production, setProduction] = useState<ProductionSnapshot | null>(null);
+  const [productionMessage, setProductionMessage] = useState<string | null>(null);
+  const [productionBusy, setProductionBusy] = useState(false);
   const sessionId = useRef<string | null>(null);
   const drag = useRef<{ id: number; startX: number; startY: number; x: number; y: number; moved: boolean } | null>(null);
 
@@ -63,8 +67,26 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
     canvas.width = Math.round(viewport.width * ratio);
     canvas.height = Math.round(viewport.height * ratio);
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    drawWorld(ctx, world, camera, viewport, selected, grid, placement);
-  }, [world, camera, viewport, selected, grid, placement]);
+    drawWorld(ctx, world, camera, viewport, selected, grid, placement, production);
+  }, [world, camera, viewport, selected, grid, placement, production]);
+
+  useEffect(() => {
+    sessionId.current ??= crypto.randomUUID();
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const response = await fetch(`/api/production?sessionId=${encodeURIComponent(sessionId.current!)}`, { cache: "no-store" });
+        const result = await response.json() as ProductionSnapshot & { error?: string };
+        if (!response.ok) throw new Error(result.error);
+        if (!cancelled) setProduction(result);
+      } catch {
+        if (!cancelled) setProductionMessage("Production server is unavailable. Retrying…");
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 1_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -81,6 +103,27 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
 
   const zoom = (factor: number) => setCamera(current => zoomCamera(current, factor, { x: viewport.width / 2, y: viewport.height / 2 }, viewport, world.size));
   const rotatePreview = () => setRotation(current => rotations[(rotations.indexOf(current) + 1) % rotations.length]);
+  const updateProduction = async (site: ProductionSite, action: "set_workers" | "collect", workers?: number) => {
+    if (productionBusy) return;
+    setProductionBusy(true);
+    setProductionMessage(action === "collect" ? "Collecting output…" : "Assigning workers…");
+    sessionId.current ??= crypto.randomUUID();
+    try {
+      const response = await fetch("/api/production", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sessionId.current, buildingId: site.buildingId, action, ...(workers === undefined ? {} : { workers }) }),
+      });
+      const result = await response.json() as { snapshot?: ProductionSnapshot; collected?: number; error?: string };
+      if (!response.ok || !result.snapshot) throw new Error(result.error ?? "Production command was rejected.");
+      setProduction(result.snapshot);
+      setProductionMessage(action === "collect" ? `${result.collected ?? 0} ${site.output} collected.` : "Worker assignment updated.");
+    } catch (error) {
+      setProductionMessage(error instanceof Error ? error.message : "Production command failed.");
+    } finally {
+      setProductionBusy(false);
+    }
+  };
   const confirmPlacement = async (candidate: SurfaceCell | null) => {
     if (tool !== "build" || !candidate || submitting) return;
     const request: PlacementRequest = { type: buildingType, x: candidate.x, y: candidate.y, rotation };
@@ -117,6 +160,7 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
     }
   };
   const selectedBuilding = selected ? buildingAt(world, selected.x, selected.y) : undefined;
+  const selectedProduction = selectedBuilding ? production?.sites.find(site => site.buildingId === selectedBuilding.id) : undefined;
   const selectedResource = selected ? resourceAt(world, selected) : undefined;
   const cityLabel = world.settlement ? toScreen({ ...world.settlement.anchor, z: world.settlement.anchor.z + 4 }, camera, viewport) : null;
   const resourceLabels = world.resourceNodes.map(node => ({ node, point: toScreen({ ...node.anchor, z: node.anchor.z + 2 }, camera, viewport) }));
@@ -125,7 +169,7 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
   return (
     <main className="flex h-dvh min-h-[520px] flex-col overflow-hidden bg-[#101f25] font-sans text-slate-100">
       <header className="z-10 flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#101d23] px-5 py-4 sm:px-7">
-        <div className="flex items-center gap-3"><span className="flex size-9 items-center justify-center rounded-lg border border-amber-200/30 text-xl text-amber-200" aria-hidden="true">◇</span><div><h1 className="text-lg font-semibold tracking-tight">OpenWorld Economy</h1><p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Spatial prototype / Milestones 0–4</p></div></div>
+        <div className="flex items-center gap-3"><span className="flex size-9 items-center justify-center rounded-lg border border-amber-200/30 text-xl text-amber-200" aria-hidden="true">◇</span><div><h1 className="text-lg font-semibold tracking-tight">OpenWorld Economy</h1><p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Spatial prototype / Milestones 0–5</p></div></div>
         <span className="rounded-full border border-emerald-300/20 bg-emerald-300/5 px-3 py-1.5 text-xs text-emerald-200">{tool === "build" ? "Build tool active" : "Inspect tool"}</span>
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
@@ -226,6 +270,17 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
               if (farm) { setTool("inspect"); setSelected(farm); setCamera(current => ({ ...current, focus: focusCell(farm), zoom: Math.max(current.zoom, 1.2) })); }
             }}>View farmland</button>
           </section>
+          <section className="mb-6 border-b border-white/10 pb-5" aria-label="Production overview">
+            <div className="flex items-end justify-between gap-3"><div><p className="text-[10px] uppercase tracking-[0.2em] text-sky-200">Production</p><h2 className="mt-1 text-lg font-semibold">Novagrad industry</h2></div>{production && <span className="text-xs text-slate-400">{production.availableWorkers} / {production.population} free</span>}</div>
+            <div className="mt-3 space-y-2">{production?.sites.map(site => {
+              const building = world.buildings?.find(candidate => candidate.id === site.buildingId);
+              const statusLabel = site.status === "running" ? "Running" : site.status === "missing_workers" ? "Missing workers" : "Storage full";
+              return <button key={site.buildingId} className={`${button} flex w-full items-center justify-between gap-3 text-left`} onClick={() => {
+                if (!building) return;
+                setTool("inspect"); setSelected(world.cells[building.y * world.size + building.x]); setCamera(current => ({ ...current, focus: focusCell(building), zoom: Math.max(current.zoom, 1.35) }));
+              }}><span><span className="block text-xs font-medium">{site.name}</span><span className="mt-1 block text-[10px] text-slate-400">{site.assignedWorkers}/{site.requiredWorkers} workers · {site.stored}/{site.storageCapacity} {site.output}</span></span><span className={`shrink-0 text-[10px] ${site.status === "running" ? "text-emerald-300" : site.status === "missing_workers" ? "text-amber-300" : "text-red-300"}`}>● {statusLabel}</span></button>;
+            }) ?? <p className="text-xs text-slate-400">Connecting to the production server…</p>}</div>
+          </section>
           <section className="mb-6 border-b border-white/10 pb-5" aria-label="Construction tools">
             <div className="flex items-center justify-between gap-3">
               <div><p className="text-[10px] uppercase tracking-[0.2em] text-amber-200">World tool</p><h2 className="mt-1 text-lg font-semibold">{tool === "build" ? "Place building" : "Inspect"}</h2></div>
@@ -244,15 +299,26 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
           <p className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Selected location</p>
           <h2 className="mt-2 text-xl font-medium">{selectedBuilding ? buildingDefinitions[selectedBuilding.type].name : selectedResource ? selectedResource.name : selected ? terrainNames[selected.terrain] : "Explore the world"}</h2>
           {selectedBuilding && <p className="mt-2 text-xs leading-5 text-slate-400">{buildingDefinitions[selectedBuilding.type].purpose} Footprint: {footprintOf(selectedBuilding.type, selectedBuilding.rotation).width} × {footprintOf(selectedBuilding.type, selectedBuilding.rotation).depth}. Rotation: {selectedBuilding.rotation}. Settlement: {world.settlement?.name}.</p>}
+          {selectedProduction && <div className="mt-4 rounded-xl border border-white/10 bg-black/10 p-4">
+            <div className="flex items-center justify-between gap-3"><span className={`text-xs font-semibold ${selectedProduction.status === "running" ? "text-emerald-300" : selectedProduction.status === "missing_workers" ? "text-amber-300" : "text-red-300"}`}>{selectedProduction.status === "running" ? "● Running" : selectedProduction.status === "missing_workers" ? "● Missing workers" : "● Storage full"}</span><span className="text-xs capitalize text-slate-400">{selectedProduction.output}</span></div>
+            <p className="mt-2 text-xs leading-5 text-slate-300">{selectedProduction.statusReason}</p>
+            <div className="mt-3 flex items-center justify-between text-xs"><span className="text-slate-400">Workers</span><span>{selectedProduction.assignedWorkers} / {selectedProduction.requiredWorkers}</span></div>
+            <div className="mt-2 flex gap-2"><button className={`${button} flex-1`} disabled={productionBusy || selectedProduction.assignedWorkers === 0} onClick={() => void updateProduction(selectedProduction, "set_workers", selectedProduction.assignedWorkers - 1)}>− Worker</button><button className={`${button} flex-1`} disabled={productionBusy || selectedProduction.assignedWorkers >= selectedProduction.requiredWorkers || (production?.availableWorkers ?? 0) === 0} onClick={() => void updateProduction(selectedProduction, "set_workers", selectedProduction.assignedWorkers + 1)}>+ Worker</button></div>
+            <div className="mt-4 flex items-center justify-between text-xs"><span className="text-slate-400">Output</span><span>+{selectedProduction.outputAmount} / {selectedProduction.cycleMs / 1000}s</span></div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10"><div className={`h-full transition-[width] ${selectedProduction.status === "running" ? "bg-emerald-400" : "bg-slate-600"}`} style={{ width: `${Math.min(100, selectedProduction.progressMs / selectedProduction.cycleMs * 100)}%` }} /></div>
+            <div className="mt-4 flex items-center justify-between text-xs"><span className="text-slate-400">Local storage</span><span>{selectedProduction.stored} / {selectedProduction.storageCapacity} {selectedProduction.output}</span></div>
+            <button className={`${button} mt-3 w-full`} disabled={productionBusy || selectedProduction.stored === 0} onClick={() => void updateProduction(selectedProduction, "collect")}>Collect output</button>
+            {productionMessage && <p className="mt-2 text-xs text-amber-100" aria-live="polite">{productionMessage}</p>}
+          </div>}
           {selectedResource && <div className="mt-3 rounded-lg border border-white/10 bg-black/10 p-3 text-xs text-slate-300"><p className="capitalize">Resource: {selectedResource.type}</p><p className="mt-1">Estimated reserve: {selectedResource.estimatedReserve.toLocaleString("en-US")}</p><p className="mt-1">Region: {selectedResource.cellCount} cells</p><p className="mt-2 text-slate-500">Decorative markers show presence; reserve is stored on this resource node.</p></div>}
-          {selected?.terrain === "farmland" && <p className="mt-2 text-xs leading-5 text-slate-400">Agricultural land use suitable for future crop production. Crop state and output are not simulated yet.</p>}
+          {selected?.terrain === "farmland" && !selectedProduction && <p className="mt-2 text-xs leading-5 text-slate-400">Agricultural land suitable for food production at a Farm.</p>}
           <div className="mt-5" aria-live="polite" aria-atomic="true">
             {selected ? <><div className="grid grid-cols-3 gap-2">{(["x", "y", "z"] as const).map(axis => <div key={axis} className="rounded-lg border border-white/10 bg-black/10 p-3"><p className="text-xs uppercase text-slate-400">{axis}</p><p className="mt-1 font-mono text-xl text-amber-100">{selected[axis]}</p></div>)}</div><p className="mt-4 text-xs text-slate-400">Chunk {chunk?.x}, {chunk?.y} · Surface elevation {selected.z}</p></> : <p className="text-sm leading-6 text-slate-400">Select a diamond to inspect its world coordinates. Follow the river, find the coastline, or explore the stepped hills and mountains.</p>}
           </div>
           <button className={`${button} mt-5 w-full`} disabled={!selected} onClick={() => { if (selected) setCamera(current => ({ ...current, focus: focusCell(selected) })); }}>Focus selected tile</button>
           <div className="mt-7 border-t border-white/10 pt-5"><h3 className="text-xs font-medium text-slate-300">Map layers</h3><label className="mt-4 flex cursor-pointer items-center justify-between text-sm text-slate-400">Tile grid<input type="checkbox" checked={grid} onChange={event => setGrid(event.target.checked)} className="size-4 accent-amber-200" /></label><div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-400"><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#718e6c]" />Grassland</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#2c7187]" />Water</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#92988f]" />Mountain</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#456f4d]" />Forest</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#a39351]" />Farmland</span></div></div>
           <div className="mt-7 border-t border-white/10 pt-5 text-xs leading-6 text-slate-400"><h3 className="mb-2 font-medium text-slate-300">Navigation</h3><p>Drag to pan · Scroll to zoom</p><p>WASD / arrows to pan when map is focused</p><p>Enter to inspect the center · Esc to clear</p></div>
-          <p className="mt-7 text-[11px] leading-5 text-slate-500">Construction is authoritative for this running server session. Inventory, costs, persistence, authentication, and population simulation arrive later.</p>
+          <p className="mt-7 text-[11px] leading-5 text-slate-500">Construction and production are authoritative for this running server session. Costs, persistent inventory, authentication, and population growth arrive later.</p>
         </aside>
       </div>
       <footer className="flex flex-wrap justify-between gap-2 border-t border-white/10 bg-[#101d23] px-5 py-2.5 font-mono text-[10px] text-slate-400"><span>SEED / {world.seed}</span><span>{world.cells.length.toLocaleString("en-US")} CELLS · {world.chunkSize} × {world.chunkSize}-CELL CHUNKS</span><span>2:1 ISOMETRIC / CANVAS</span></footer>

@@ -28,7 +28,7 @@ The world remains a surface height field, not a collection of individual voxels.
 
 - Two forest regions, Northwood and Eastwood, are semantic forest resource nodes rendered with procedurally scattered tree primitives.
 - Stone Ridge and Iron Heights occupy mountain terrain and use distinct light stone and dark iron markers.
-- Two farmland belts use dedicated terrain semantics and visible crop rows. Crop growth and production are deferred to Milestone 5.
+- Two farmland belts use dedicated terrain semantics and visible crop rows. Milestone 5 places the first food producer on this land.
 - Resource nodes own their type, anchor, region size, and estimated reserve. Decorative marker counts do not determine economic quantities.
 - The central settlement reserve remains ordinary grassland, so Novagrad placement is deterministic and existing construction stays valid.
 - The Economic Geography panel focuses each deposit or farmland. World labels and the selected-location inspector expose resource type, estimated reserve, cell count, coordinates, and elevation.
@@ -63,6 +63,18 @@ The automated tests include footprint validity, unchanged terrain, road connecti
 
 `world/domain/construction.ts` owns footprint validation and placement. `world/server/construction-store.ts` owns prototype session revisions, while `app/api/construction/route.ts` is the command boundary. The same pure validator powers the responsive client preview, but the server result remains authoritative.
 
+## Milestone 5: production loop
+
+- Three starting producers connect buildings to the economic terrain: a Farm on farmland, a Lumber Camp in Northwood Forest, and a Quarry on Stone Ridge. Each occupies a level 2×2 footprint without altering the generated surface.
+- Every recipe declares its commodity, batch size, cycle duration, worker requirement, and local storage capacity. The Farm produces 4 food every 8 seconds, the Lumber Camp produces 3 wood every 10 seconds, and the Quarry produces 2 stone every 12 seconds.
+- Production advances from elapsed server time through `GET /api/production`; Canvas rendering only displays snapshots returned by the server. Closing or slowing the browser does not turn frame rate into economic progress.
+- The production overview shows assigned and available citizens, stored output, and a clear Running, Missing workers, or Storage full state. Map badges use the same status and show server progress for active sites.
+- Selecting a producer opens worker controls, output and cycle details, a progress bar, storage usage, and the exact reason an idle site cannot run. Collecting output clears local storage and lets a staffed site resume.
+- The initial scenario demonstrates all three states: the Farm is running, the Lumber Camp needs two workers, and the Quarry is full. Worker changes and collection use server-validated `PATCH /api/production` commands.
+- Prototype production state lives in server-process memory and resets when the server restarts. Collected goods are reported by the command but a shared inventory, input recipes, costs, persistence, authenticated ownership, and logistics remain future work. Authentication must use NextAuth when introduced.
+
+`world/domain/production.ts` owns recipes, site placement, status explanations, and elapsed-time advancement. `world/server/production-store.ts` owns session state and population checks, while `app/api/production/route.ts` exposes snapshots and commands.
+
 ## Run and verify
 
 ```bash
@@ -77,12 +89,14 @@ Open http://localhost:3000. Drag the map, zoom at a river tile, select it, and v
 
 For construction, choose Build, select a building, and move beside a road. Confirm valid cells turn green and invalid cells turn red with a reason. Rotate the Workshop and verify its footprint changes between 2×1 and 1×2. Click a valid preview and verify the building count increases only after the server accepts it. Try the same footprint again and verify it is rejected as occupied.
 
+For production, open each site from the Production panel. Confirm the Farm advances, the Lumber Camp explains that it needs two workers, and the Quarry explains that its storage is full. Add two Lumber Camp workers and watch its server-reported progress increase. Collect the Quarry output and confirm it changes to Running.
+
 ## Architecture and scope
 
 `world/domain/world.ts` generates a serializable, read-only semantic snapshot on the server page. Logical cells never contain screen positions or renderer objects. Chunks are currently derived addresses, not streamed storage.
 
 `presentation/world/projection.ts` owns coordinate transforms, bounded camera operations, and elevated terrain face picking. `render.ts` maps semantic terrain to shaded Canvas top and cliff polygons. `world-map.tsx` owns presentation-only camera, selection, and UI state. Rendering runs when those inputs change rather than in a perpetual simulation loop.
 
-The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry and depth ordering remain presentation responsibilities. Picking scans cells in reverse painter order with a bounds check; chunk-level acceleration is deferred until profiling justifies it. Construction now crosses a server validation boundary, while persistence, multiplayer, authentication, money, production, and ownership remain unimplemented.
+The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry and depth ordering remain presentation responsibilities. Picking scans cells in reverse painter order with a bounds check; chunk-level acceleration is deferred until profiling justifies it. Construction and production cross server validation boundaries, while persistence, multiplayer, authentication, money, shared inventory, and ownership remain unimplemented.
 
 The blueprint and reference image describe the long-term destination, not the current art target.

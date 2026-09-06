@@ -2,6 +2,7 @@ import { buildingAt } from "../../world/domain/settlement";
 import type { PlacementRequest, PlacementValidation } from "../../world/domain/construction";
 import { buildingFaces, buildingsByDepth, buildingVisuals } from "./buildings";
 import type { SurfaceCell, WorldSnapshot } from "../../world/domain/world";
+import type { ProductionSnapshot } from "../../world/domain/production";
 import { orderedCells, terrainFaces, toScreen, TILE_WIDTH, TILE_HEIGHT, ELEVATION_HEIGHT, type Camera, type Viewport } from "./projection";
 
 const grass = ["#668568", "#6c8b6d", "#718e6c", "#68866a", "#748f70"];
@@ -12,12 +13,13 @@ const rock = ["#89918b", "#92988f", "#838d88", "#9ba098", "#8e9791"];
 
 export type PlacementPreview = Readonly<{ request: PlacementRequest; validation: PlacementValidation }>;
 
-export function drawWorld(ctx: CanvasRenderingContext2D, world: WorldSnapshot, camera: Camera, viewport: Viewport, selected: SurfaceCell | null, grid: boolean, preview: PlacementPreview | null = null) {
+export function drawWorld(ctx: CanvasRenderingContext2D, world: WorldSnapshot, camera: Camera, viewport: Viewport, selected: SurfaceCell | null, grid: boolean, preview: PlacementPreview | null = null, production: ProductionSnapshot | null = null) {
   ctx.clearRect(0, 0, viewport.width, viewport.height);
   const buildings = buildingsByDepth(world);
   const roads = new Set((world.roads ?? []).map(road => `${road.x},${road.y}`));
   const selectedBuilding = selected ? buildingAt(world, selected.x, selected.y) : undefined;
   const previewCells = new Set(preview?.validation.cells.map(cell => `${cell.x},${cell.y}`) ?? []);
+  const productionByBuilding = new Map(production?.sites.map(site => [site.buildingId, site]) ?? []);
   for (const cell of orderedCells(world)) {
     const p = toScreen(cell, camera, viewport);
     const building = buildings.get(`${cell.x},${cell.y}`);
@@ -111,6 +113,19 @@ export function drawWorld(ctx: CanvasRenderingContext2D, world: WorldSnapshot, c
       const center = roof.reduce((sum, point) => ({ x: sum.x + point.x / 4, y: sum.y + point.y / 4 }), { x: 0, y: 0 });
       ctx.fillStyle = "#16272b"; ctx.font = `bold ${Math.max(7, 8 * camera.zoom)}px Arial`; ctx.textAlign = "center";
       ctx.fillText(buildingVisuals[building.type].mark, center.x, center.y + 3);
+      const site = productionByBuilding.get(building.id);
+      if (site) {
+        const badgeY = center.y - Math.max(15, 18 * camera.zoom);
+        ctx.beginPath(); ctx.arc(center.x, badgeY, Math.max(4, 5 * camera.zoom), 0, Math.PI * 2);
+        ctx.fillStyle = site.status === "running" ? "#4ade80" : site.status === "missing_workers" ? "#fbbf24" : "#f87171";
+        ctx.fill(); ctx.strokeStyle = "#102128"; ctx.lineWidth = Math.max(1, camera.zoom); ctx.stroke();
+        if (site.status === "running") {
+          const width = Math.max(18, 30 * camera.zoom);
+          const progress = Math.min(1, site.progressMs / site.cycleMs);
+          ctx.fillStyle = "#102128cc"; ctx.fillRect(center.x - width / 2, badgeY + 8 * camera.zoom, width, Math.max(2, 3 * camera.zoom));
+          ctx.fillStyle = "#4ade80"; ctx.fillRect(center.x - width / 2, badgeY + 8 * camera.zoom, width * progress, Math.max(2, 3 * camera.zoom));
+        }
+      }
     }
   }
 }

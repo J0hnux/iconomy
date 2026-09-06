@@ -5,6 +5,9 @@ export const buildingDefinitions = {
   house: { name: "House", width: 1, depth: 1, purpose: "Housing for the founding citizens." },
   warehouse: { name: "Warehouse", width: 2, depth: 2, purpose: "Local storage site. Inventory and production arrive later." },
   workshop: { name: "Workshop", width: 2, depth: 1, purpose: "A small production site. Recipes and workers arrive later." },
+  farm: { name: "Farm", width: 2, depth: 2, purpose: "Turns cultivated farmland into food for Novagrad." },
+  lumber_camp: { name: "Lumber Camp", width: 2, depth: 2, purpose: "Harvests timber from a managed forest site." },
+  quarry: { name: "Quarry", width: 2, depth: 2, purpose: "Extracts stone from the exposed ridge." },
 } as const;
 export type BuildingType = keyof typeof buildingDefinitions;
 export type BuildingRotation = "north" | "east" | "south" | "west";

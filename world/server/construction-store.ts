@@ -1,12 +1,13 @@
 import { placeBuilding, validatePlacement, type PlacementRequest } from "../domain/construction";
 import { withStartingSettlement } from "../domain/settlement";
+import { withStartingProduction } from "../domain/production";
 import { generateWorld, type WorldSnapshot } from "../domain/world";
 
 type Session = { revision: number; world: WorldSnapshot };
 const sessions = new Map<string, Session>();
 
 export function constructForSession(sessionId: string, expectedRevision: number, placement: PlacementRequest) {
-  const session = sessions.get(sessionId) ?? { revision: 0, world: withStartingSettlement(generateWorld()) };
+  const session = sessions.get(sessionId) ?? { revision: 0, world: withStartingProduction(withStartingSettlement(generateWorld())) };
   if (session.revision !== expectedRevision) {
     return { ok: false as const, status: 409, error: "World changed. The latest server state has been restored.", revision: session.revision, buildings: session.world.buildings };
   }

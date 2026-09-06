@@ -8,6 +8,9 @@ export const buildingVisuals = {
   house: { height: 1.3, top: "#b76d4d", left: "#c3b28f", right: "#e2cfaa", mark: "" },
   warehouse: { height: 1.9, top: "#748896", left: "#788079", right: "#a6afa4", mark: "STORE" },
   workshop: { height: 1.5, top: "#b88b58", left: "#765b43", right: "#947356", mark: "SHOP" },
+  farm: { height: 1.15, top: "#d3b65d", left: "#8b6c35", right: "#ad8842", mark: "FARM" },
+  lumber_camp: { height: 1.45, top: "#82704c", left: "#4e4935", right: "#655a3e", mark: "WOOD" },
+  quarry: { height: 1.2, top: "#a8ada8", left: "#666d69", right: "#808782", mark: "STONE" },
 };
 export function buildingDepthCell(building: Building) {
   const footprint = footprintOf(building.type, building.rotation);
