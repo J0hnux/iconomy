@@ -1,15 +1,6 @@
-import { withStartingSettlement } from "@/world/domain/settlement";
-import { withStartingProduction } from "@/world/domain/production";
-import { withStartingLogistics } from "@/world/domain/logistics";
 import WorldMap from "@/presentation/world/world-map";
-import { generateWorld } from "@/world/domain/world";
+import { createStartingWorld } from "@/world/simulation/game-simulation";
 
 export default function Home() {
-  return (
-    <WorldMap
-      world={withStartingLogistics(
-        withStartingProduction(withStartingSettlement(generateWorld())),
-      )}
-    />
-  );
+  return <WorldMap world={createStartingWorld()} />;
 }

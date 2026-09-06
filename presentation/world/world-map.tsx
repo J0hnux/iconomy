@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   constructibleBuildingTypes,
   validatePlacement,
@@ -19,6 +19,10 @@ import type {
   ProductionSite,
 } from "@/world/domain/production";
 import type { PricePoint } from "@/world/domain/market";
+import {
+  LocalGameSimulation,
+  type GameReadModel,
+} from "@/world/simulation/game-simulation";
 import {
   chunkOf,
   resourceAt,
@@ -100,6 +104,8 @@ export default function WorldMap({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const logisticsCanvasRef = useRef<HTMLCanvasElement>(null);
+  const simulationRef = useRef<LocalGameSimulation | null>(null);
+  const simulationTimeRef = useRef(0);
   const [world, setWorld] = useState(initialWorld);
   const [camera, setCamera] = useState<Camera>({
     focus: world.settlement
@@ -135,7 +141,6 @@ export default function WorldMap({
   const [companyOpen, setCompanyOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
   const [marketMessage, setMarketMessage] = useState<string | null>(null);
-  const sessionId = useRef<string | null>(null);
   const drag = useRef<{
     id: number;
     startX: number;
@@ -167,6 +172,11 @@ export default function WorldMap({
       }).length,
     [world, scene],
   );
+  const applyReadModel = useCallback((readModel: GameReadModel) => {
+    setWorld(readModel.world);
+    setRevision(readModel.revision);
+    setProduction(readModel.economy);
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -229,10 +239,10 @@ export default function WorldMap({
     canvas.style.width = `${viewport.width}px`;
     canvas.style.height = `${viewport.height}px`;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    const serverOffset = production.serverTime - Date.now();
+    const simulationOffset = production.simulationTime - Date.now();
     let frame = 0;
     const draw = () => {
-      const now = Date.now() + serverOffset;
+      const now = Date.now() + simulationOffset;
       drawLogistics(ctx, world, camera, viewport, production, now, scene);
       const moving = production.logistics.shipments.some(
         (shipment) =>
@@ -247,31 +257,21 @@ export default function WorldMap({
   }, [world, camera, viewport, production, scene]);
 
   useEffect(() => {
-    sessionId.current ??= crypto.randomUUID();
-    let cancelled = false;
-    const refresh = async () => {
-      try {
-        const response = await fetch(
-          `/api/production?sessionId=${encodeURIComponent(sessionId.current!)}`,
-          { cache: "no-store" },
-        );
-        const result = (await response.json()) as ProductionSnapshot & {
-          error?: string;
-        };
-        if (!response.ok) throw new Error(result.error);
-        if (!cancelled) setProduction(result);
-      } catch {
-        if (!cancelled)
-          setProductionMessage("Production server is unavailable. Retrying…");
-      }
+    const startTime = Date.now();
+    const simulation = new LocalGameSimulation(initialWorld, startTime);
+    simulationRef.current = simulation;
+    simulationTimeRef.current = startTime;
+    const refresh = () => {
+      simulationTimeRef.current = Date.now();
+      applyReadModel(simulation.read(simulationTimeRef.current));
     };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 1_000);
+    refresh();
+    const timer = window.setInterval(refresh, 1_000);
     return () => {
-      cancelled = true;
       window.clearInterval(timer);
+      if (simulationRef.current === simulation) simulationRef.current = null;
     };
-  }, []);
+  }, [initialWorld, applyReadModel]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -315,7 +315,7 @@ export default function WorldMap({
       (current) =>
         rotations[(rotations.indexOf(current) + 1) % rotations.length],
     );
-  const updateProduction = async (
+  const updateProduction = (
     site: ProductionSite,
     action: "set_workers" | "collect",
     workers?: number,
@@ -323,29 +323,23 @@ export default function WorldMap({
     if (productionBusy) return;
     setProductionBusy(true);
     setProductionMessage(
-      action === "collect" ? "Collecting output…" : "Assigning workers…",
+      action === "collect" ? "Dispatching output…" : "Assigning workers…",
     );
-    sessionId.current ??= crypto.randomUUID();
     try {
-      const response = await fetch("/api/production", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: sessionId.current,
-          buildingId: site.buildingId,
-          action,
-          ...(workers === undefined ? {} : { workers }),
-        }),
-      });
-      const result = (await response.json()) as {
-        snapshot?: ProductionSnapshot;
-        collected?: number;
-        shipment?: { arrivalTime: number };
-        error?: string;
-      };
-      if (!response.ok || !result.snapshot)
-        throw new Error(result.error ?? "Production command was rejected.");
-      setProduction(result.snapshot);
+      const simulation = simulationRef.current;
+      if (!simulation) throw new Error("Local simulation is starting.");
+      const result = simulation.execute(
+        action === "collect"
+          ? { type: "dispatch_production", buildingId: site.buildingId }
+          : {
+              type: "set_workers",
+              buildingId: site.buildingId,
+              workers: workers as number,
+            },
+        simulationTimeRef.current,
+      );
+      applyReadModel(result.readModel);
+      if (!result.ok) throw new Error(result.error);
       setProductionMessage(
         action === "collect"
           ? `${result.collected ?? 0} ${site.output} dispatched to the warehouse.`
@@ -359,7 +353,7 @@ export default function WorldMap({
       setProductionBusy(false);
     }
   };
-  const sellGoods = async (
+  const sellGoods = (
     commodity: Commodity,
     quantity: number,
     expectedPriceCents: number,
@@ -367,29 +361,20 @@ export default function WorldMap({
     if (productionBusy || quantity <= 0) return;
     setProductionBusy(true);
     setMarketMessage(`Selling ${quantity} ${commodity}…`);
-    sessionId.current ??= crypto.randomUUID();
     try {
-      const response = await fetch("/api/production", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: sessionId.current,
-          action: "sell",
+      const simulation = simulationRef.current;
+      if (!simulation) throw new Error("Local simulation is starting.");
+      const result = simulation.execute(
+        {
+          type: "sell_goods",
           commodity,
           quantity,
           expectedPriceCents,
-        }),
-      });
-      const result = (await response.json()) as {
-        snapshot?: ProductionSnapshot;
-        revenueCents?: number;
-        error?: string;
-      };
-      if (!response.ok || !result.snapshot) {
-        if (result.snapshot) setProduction(result.snapshot);
-        throw new Error(result.error ?? "Market sale was rejected.");
-      }
-      setProduction(result.snapshot);
+        },
+        simulationTimeRef.current,
+      );
+      applyReadModel(result.readModel);
+      if (!result.ok) throw new Error(result.error);
       setMarketMessage(
         `${quantity} ${commodity} sold for ${money(result.revenueCents ?? 0)}.`,
       );
@@ -414,7 +399,7 @@ export default function WorldMap({
       zoom: Math.max(current.zoom, 1.35),
     }));
   };
-  const confirmPlacement = async (candidate: SurfaceCell | null) => {
+  const confirmPlacement = (candidate: SurfaceCell | null) => {
     if (tool !== "build" || !candidate || submitting) return;
     const request: PlacementRequest = {
       type: buildingType,
@@ -428,49 +413,38 @@ export default function WorldMap({
       return;
     }
     setSubmitting(true);
-    setBuildMessage("Submitting construction command…");
-    sessionId.current ??= crypto.randomUUID();
+    setBuildMessage("Validating construction command…");
     try {
-      const response = await fetch("/api/construction", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: sessionId.current,
+      const simulation = simulationRef.current;
+      if (!simulation) throw new Error("Local simulation is starting.");
+      const result = simulation.execute(
+        {
+          type: "construct",
           expectedRevision: revision,
           placement: request,
-        }),
-      });
-      const result = (await response.json()) as {
-        building?: NonNullable<WorldSnapshot["buildings"]>[number];
-        buildings?: WorldSnapshot["buildings"];
-        revision?: number;
-        error?: string;
-      };
-      if (
-        !response.ok ||
-        !result.building ||
-        typeof result.revision !== "number"
-      ) {
-        if (typeof result.revision === "number") setRevision(result.revision);
-        if (result.buildings)
-          setWorld((current) => ({ ...current, buildings: result.buildings }));
-        setBuildMessage(result.error ?? "The server rejected this placement.");
+        },
+        simulationTimeRef.current,
+      );
+      applyReadModel(result.readModel);
+      if (!result.ok || !result.building) {
+        setBuildMessage(
+          result.ok ? "Construction could not be completed." : result.error,
+        );
         return;
       }
-      setWorld((current) => ({
-        ...current,
-        buildings: [...(current.buildings ?? []), result.building!],
-      }));
-      setRevision(result.revision);
       setSelected(
-        world.cells[result.building.y * world.size + result.building.x],
+        result.readModel.world.cells[
+          result.building.y * result.readModel.world.size + result.building.x
+        ],
       );
       setHovered(null);
       setBuildMessage(
         `${buildingDefinitions[result.building.type].name} constructed.`,
       );
-    } catch {
-      setBuildMessage("Construction server is unavailable. Try again.");
+    } catch (error) {
+      setBuildMessage(
+        error instanceof Error ? error.message : "Construction command failed.",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -523,7 +497,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestones 0–10
+              Prototype / Milestones 0–11
             </p>
           </div>
         </div>
@@ -564,7 +538,7 @@ export default function WorldMap({
         </nav>
         <span className="rounded-full border border-emerald-300/20 bg-emerald-300/5 px-3 py-1.5 text-xs text-emerald-200">
           {production
-            ? new Date(production.serverTime).toLocaleTimeString([], {
+            ? new Date(production.simulationTime).toLocaleTimeString([], {
                 hour: "2-digit",
                 minute: "2-digit",
               }) + " · "
@@ -1137,7 +1111,7 @@ export default function WorldMap({
                     );
                   }) ?? (
                     <p className="text-xs text-slate-400">
-                      Connecting to the production server…
+                      Starting the local simulation…
                     </p>
                   )}
                 </div>
@@ -1229,8 +1203,8 @@ export default function WorldMap({
                   </div>
                   <p className="mt-3 text-[11px] leading-5 text-slate-400">
                     Dashed route lines follow connected road cells. Cargo enters
-                    warehouse inventory only when the server marks its shipment
-                    arrived.
+                    warehouse inventory only when the simulation marks its
+                    shipment arrived.
                   </p>
                 </section>
               )}
@@ -1638,7 +1612,7 @@ export default function WorldMap({
           </div>
           <p className="mt-7 text-[11px] leading-5 text-slate-500">
             Construction, production, shipment timing, and warehouse arrivals
-            are authoritative for this running server session. Costs,
+            are authoritative for this local simulation. Costs,
             persistence, authentication, and population growth arrive later.
           </p>
         </aside>

@@ -47,7 +47,7 @@ The renderer maps semantic terrain and resource IDs to primitives. Trees and ore
 - The inspector identifies buildings and shows their purpose, footprint, settlement, and origin coordinates.
 - Construction, inventory, production, and population growth are not implemented in this settlement milestone.
 
-`world/domain/settlement.ts` owns starting settlement generation and building definitions. `presentation/world/buildings.ts` owns primitive building appearance. The server page composes terrain and settlement into one serializable snapshot.
+`world/domain/settlement.ts` owns starting settlement generation and building definitions. `presentation/world/buildings.ts` owns primitive building appearance. The page composes terrain and settlement into one serializable initial snapshot.
 
 The automated tests include footprint validity, unchanged terrain, road connectivity, deterministic settlement placement, safe handling of unavailable sites, and roof/wall picking across zoom levels. Browser checks cover warehouse inspection, panning, and zooming with a selected building.
 
@@ -57,33 +57,33 @@ The automated tests include footprint validity, unchanged terrain, road connecti
 - House (1×1), Warehouse (2×2), and Workshop (2×1) are constructible. Workshop rotation demonstrates footprint changes; use the Rotate button or `R` for north/east/south/west quarter turns.
 - Moving over the map shows a transparent green or red footprint. The panel explains invalid placement before submission.
 - Placement requires in-bounds, level grassland beside an existing road. Buildings cannot overlap structures or roads.
-- Clicking a valid preview sends a construction command to `POST /api/construction`. The route regenerates the authoritative starting world, repeats all validation, checks the expected revision, assigns the building ID, and returns the accepted building.
-- The client renders a building only after that response. A revision conflict restores the server's current building list.
-- Prototype construction sessions live in server-process memory and reset when the server restarts. Costs, inventory, persistent storage, authenticated ownership, and multiplayer synchronization remain future work. When authentication is introduced, it must use NextAuth.
+- Clicking a valid preview sends a construction command to the local simulation. The authority repeats all validation, checks the expected revision, assigns the building ID, and returns the accepted world read model.
+- The client renders a building only after the local simulation accepts the command. A revision conflict restores the simulation's current world read model.
+- Construction state lives in the current browser simulation and resets when the page reloads. Costs, inventory requirements, and persistent storage remain future work.
 
-`world/domain/construction.ts` owns footprint validation and placement. `world/server/construction-store.ts` owns prototype session revisions, while `app/api/construction/route.ts` is the command boundary. The same pure validator powers the responsive client preview, but the server result remains authoritative.
+`world/domain/construction.ts` owns footprint validation and placement. `world/simulation/game-simulation.ts` owns revisions and the command boundary. The same pure validator powers the responsive client preview, but the simulation result remains authoritative.
 
 ## Milestone 5: production loop
 
 - Three starting producers connect buildings to the economic terrain: a Farm on farmland, a Lumber Camp in Northwood Forest, and a Quarry on Stone Ridge. Each occupies a level 2×2 footprint without altering the generated surface.
 - Every recipe declares its commodity, batch size, cycle duration, worker requirement, and local storage capacity. The Farm produces 4 food every 8 seconds, the Lumber Camp produces 3 wood every 10 seconds, and the Quarry produces 2 stone every 12 seconds.
-- Production advances from elapsed server time through `GET /api/production`; Canvas rendering only displays snapshots returned by the server. Closing or slowing the browser does not turn frame rate into economic progress.
-- The production overview shows assigned and available citizens, stored output, and a clear Running, Missing workers, or Storage full state. Map badges use the same status and show server progress for active sites.
+- Production advances from explicit simulation time on a one-second local authority tick; Canvas rendering only displays returned snapshots. Rendering frame rate does not determine economic progress.
+- The production overview shows assigned and available citizens, stored output, and a clear Running, Missing workers, or Storage full state. Map badges use the same status and show simulation progress for active sites.
 - Selecting a producer opens worker controls, output and cycle details, a progress bar, storage usage, and the exact reason an idle site cannot run. Dispatching output clears local storage and lets a staffed site resume.
-- The initial scenario demonstrates all three states: the Farm is running, the Lumber Camp needs two workers, and the Quarry is full. Worker changes and collection use server-validated `PATCH /api/production` commands.
-- Prototype production state lives in server-process memory and resets when the server restarts. Input recipes, costs, persistence, and authenticated ownership remain future work. Milestone 6 carries dispatched output into warehouse inventory. Authentication must use NextAuth when introduced.
+- The initial scenario demonstrates all three states: the Farm is running, the Lumber Camp needs two workers, and the Quarry is full. Worker changes and dispatch use locally validated simulation commands.
+- Prototype production state lives in the browser simulation and resets when the page reloads. Input recipes, costs, and persistence remain future work. Milestone 6 carries dispatched output into warehouse inventory.
 
-`world/domain/production.ts` owns recipes, site placement, status explanations, and elapsed-time advancement. `world/server/production-store.ts` owns session state and population checks, while `app/api/production/route.ts` exposes snapshots and commands.
+`world/domain/production.ts` owns recipes, site placement, status explanations, and elapsed-time advancement. `world/simulation/game-simulation.ts` composes production with population checks, logistics, markets, events, commands, and read models.
 
 ## Milestone 6: logistics
 
 - Harvest Road, Northwood Road, and Ridge Road connect the three producers to Novagrad's existing street network. Routes use contiguous logical world cells, merge into the visible road layer, avoid building footprints, and preserve the underlying terrain and elevation.
-- Dispatching stored output creates an authoritative shipment with an origin, warehouse destination, cargo, departure time, arrival time, route, and status. Goods remain in transit until server time reaches the scheduled arrival.
-- A dedicated presentation canvas draws dashed route overlays and moving cargo markers from shipment timestamps. Marker movement never controls delivery; a late or hidden browser receives the same authoritative result on its next server snapshot.
-- A server-confirmed arrival adds cargo to the Novagrad warehouse inventory and produces a short arrival ring at the destination. The logistics panel lists recent shipments, their routes, cargo, and In transit or Arrived state.
+- Dispatching stored output creates an authoritative shipment with an origin, warehouse destination, cargo, departure time, arrival time, route, and status. Goods remain in transit until simulation time reaches the scheduled arrival.
+- A dedicated presentation canvas draws dashed route overlays and moving cargo markers from shipment timestamps. Marker movement never controls delivery; a late or hidden browser receives the same authoritative result on its next simulation tick.
+- A simulation-confirmed arrival adds cargo to the Novagrad warehouse inventory and produces a short arrival ring at the destination. The logistics panel lists recent shipments, their routes, cargo, and In transit or Arrived state.
 - The warehouse inspector exposes spatial inventory for food, wood, and stone. Collecting at a producer now means dispatching goods rather than moving them into a global inventory immediately.
 - A demonstration food shipment starts in transit so the logistics layer is visible immediately. Further Farm, Lumber Camp, and Quarry shipments use their route's distance-based travel duration.
-- Logistics state remains in server-process memory for this prototype. Vehicle capacity, congestion, transport costs, persistent inventory, route construction tools, and multiplayer synchronization remain future work.
+- Logistics state remains in browser memory for this prototype. Vehicle capacity, congestion, transport costs, persistent inventory, and route construction tools remain future work.
 
 `world/domain/logistics.ts` owns road connections, deterministic route generation, shipment types, and route interpolation. The production session store owns shipment departures, authoritative arrivals, and warehouse inventory transitions. Canvas animation consumes those snapshots without changing them.
 
@@ -91,11 +91,11 @@ The automated tests include footprint validity, unchanged terrain, road connecti
 
 - The Market view keeps the isometric world visible while showing Novagrad's food, wood, and stone exchange. Each listing includes the current warehouse supply, desired stock, price, recent sparkline, percentage trend, and Stable, Low shortage, or Critical shortage indicator.
 - Prices update on authoritative five-second market ticks. Each commodity starts from a base price and responds to actual warehouse scarcity plus a small deterministic demand pulse; Canvas frames never update prices.
-- Sell 1 and Sell all issue server commands. A completed sale removes goods from Novagrad Warehouse at the quoted price and credits company cash, so market actions preserve the spatial inventory model.
+- Sell 1 and Sell all issue local simulation commands. A completed sale removes goods from Novagrad Warehouse at the quoted price and credits company cash, so market actions preserve the spatial inventory model.
 - Economic opportunities combine market shortages with real producer state. Examples direct the player to staff the idle Lumber Camp, dispatch full Quarry storage, or inspect a running producer whose commodity remains scarce.
 - Opportunity actions return to the map and focus the relevant physical producer, where the existing worker and dispatch controls complete the production decision.
 - The event log explains market, production, and logistics changes, including shortages, price moves, staffing changes, shipment departures and arrivals, and completed sales.
-- Market cash, price history, and events remain in server-process memory. Consumer orders, competing companies, order books, operating costs, persistence, and authenticated ownership remain future work.
+- Market cash, price history, and events remain in browser simulation memory. Consumer orders, competing companies, order books, operating costs, and persistence remain future work.
 
 `world/domain/market.ts` owns price formation, shortage classification, listing read models, and opportunity derivation. The production session store advances market ticks and validates warehouse sales alongside production and logistics state.
 
@@ -106,7 +106,7 @@ The automated tests include footprint validity, unchanged terrain, road connecti
 - The independent minimap draws semantic terrain, the player's settlement, selection, and a ground-plane camera outline. Click a location to pan there, or focus the minimap and press Enter to return to the settlement.
 - Company opens the existing settlement, producer, resource, and shipment management controls. Market retains price trends, sales, and opportunities. Selecting an empty cell shows terrain, road access, and building-specific placement validity with a Build here action.
 - The persistent bottom log filters All events, Market News, and Deliveries. Economy metrics use live local population, workers, producing sites, shortages, and in-transit goods; global CPI, wages, and money supply are not simulated.
-- Bottom actions open Build, Trade, Company, the actual warehouse inspector, or the home camera. Unimplemented actions are omitted. The HUD uses Tailwind and existing server snapshots, with no economy changes or new dependencies.
+- Bottom actions open Build, Trade, Company, the actual warehouse inspector, or the home camera. Unimplemented actions are omitted. The HUD uses Tailwind and simulation read models, with no economy changes or new dependencies.
 
 `presentation/world/hud.tsx` contains the player/resources, minimap, and bottom HUD components. The world controller retains camera, selection, and command ownership.
 
@@ -132,6 +132,18 @@ For chunk verification, enable Chunk boundaries, pan across a boundary, and comp
 
 For renderer-readiness verification, locate the Lumber Camp and switch between Primitive A and Primitive B under Map layers. Confirm its proportions, colors, and label change immediately, click the taller Primitive B roof to select the same Lumber Camp, and verify its workers and production status remain unchanged after repeated swaps.
 
+## Milestone 11: local deterministic simulation authority
+
+- One `LocalGameSimulation` instance now owns the current single-player world revision, buildings, production states, shipments, warehouse inventory, cash, price history, shortages, events, counters, and simulation time.
+- Player actions cross one discriminated command boundary: construct, set workers, dispatch production, or sell goods. Every command advances scheduled work to an explicit timestamp, validates through existing domain rules, applies the state change, records any event, and returns a world and economy read model.
+- The React controller retains only presentation state, a stable simulation reference, and returned read models. It no longer sends gameplay commands through HTTP or treats API responses as authority.
+- Production and markets advance on the existing one-second local timer. Shipment animation remains frame-based presentation, while shipment arrivals, inventory changes, production cycles, and prices use monotonic simulation time.
+- The previous construction and production API routes and independent server session stores were removed. This also eliminates the split world copies that could allow UI construction and economic state to diverge.
+- `exportSave()` produces a renderer-free, JSON-serializable `saveVersion: 1` authority snapshot. Browser persistence and save loading remain future work; no storage API or dependency was introduced.
+- Existing coordinates, chunks, building visuals, production recipes, worker limits, route timing, inventory rules, prices, and starting balance are unchanged.
+
+For local-authority verification, reload the page, assign workers, dispatch output, wait for its physical arrival, sell warehouse goods, and construct a building. Confirm each action updates immediately without requests to `/api/*`, rejected commands leave state unchanged, and a page reload starts a fresh local run.
+
 ## Run and verify
 
 ```bash
@@ -144,9 +156,9 @@ npm run build
 
 Open http://localhost:3000. Drag the map, zoom at a river tile, select it, and verify selection remains attached when panning, zooming, or resizing. Dragging must not select a new tile. Check keyboard controls and focus-selected behavior. Select a mountain tile and confirm z is greater than zero; click an exposed cliff and verify its owning tile is selected.
 
-For construction, choose Build, select a building, and move beside a road. Confirm valid cells turn green and invalid cells turn red with a reason. Rotate the Workshop and verify its footprint changes between 2×1 and 1×2. Click a valid preview and verify the building count increases only after the server accepts it. Try the same footprint again and verify it is rejected as occupied.
+For construction, choose Build, select a building, and move beside a road. Confirm valid cells turn green and invalid cells turn red with a reason. Rotate the Workshop and verify its footprint changes between 2×1 and 1×2. Click a valid preview and verify the building count increases only after the local simulation accepts it. Try the same footprint again and verify it is rejected as occupied.
 
-For production, open each site from the Production panel. Confirm the Farm advances, the Lumber Camp explains that it needs two workers, and the Quarry explains that its storage is full. Add two Lumber Camp workers and watch its server-reported progress increase. Collect the Quarry output and confirm it changes to Running.
+For production, open each site from the Production panel. Confirm the Farm advances, the Lumber Camp explains that it needs two workers, and the Quarry explains that its storage is full. Add two Lumber Camp workers and watch its simulation progress increase. Dispatch the Quarry output and confirm it changes to Running.
 
 For logistics, watch the initial food marker travel along Harvest Road and confirm the logistics panel changes it from In transit to Arrived. Dispatch the Quarry's stone, verify its local storage clears while warehouse stone remains unchanged, then confirm the warehouse gains 12 stone only after the Ridge Road arrival. Select the Warehouse to inspect its spatial inventory.
 
@@ -154,10 +166,10 @@ For the market, choose Market in the top navigation. Compare each price trend an
 
 ## Architecture and scope
 
-`world/domain/world.ts` generates a serializable, read-only semantic snapshot on the server page. Logical cells never contain screen positions or renderer objects. The snapshot includes compact chunk region metadata; cells remain flat authoritative data rather than streamed storage.
+`world/domain/world.ts` generates a serializable, read-only semantic snapshot for the initial page. Logical cells never contain screen positions or renderer objects. The snapshot includes compact chunk region metadata; cells remain flat authoritative data rather than streamed storage.
 
 `presentation/world/projection.ts` owns coordinate transforms, bounded camera operations, visible chunk selection, and elevated terrain face picking. `buildings.ts` owns swappable primitive visual sets and derives geometry from semantic building positions. `render.ts` maps the visible semantic scene and selected visual set to shaded Canvas polygons. `world-map.tsx` owns presentation-only camera, selection, visual-profile, and UI state. Rendering runs when those inputs change rather than in a perpetual simulation loop.
 
-The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry, visible scene selection, and depth ordering remain presentation responsibilities. Picking scans only visible chunk cells in reverse painter order with a bounds check. Construction, production, shipments, warehouse arrivals, market ticks, and sales cross server validation boundaries, while persistence, multiplayer, authentication, competing companies, and ownership remain unimplemented.
+The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry, visible scene selection, and depth ordering remain presentation responsibilities. Picking scans only visible chunk cells in reverse painter order with a bounds check. Construction, production, shipments, warehouse arrivals, market ticks, and sales cross the local simulation command and validation boundary. Browser persistence, competing companies, and ownership remain unimplemented.
 
 The blueprint and reference image describe the long-term destination, not the current art target.

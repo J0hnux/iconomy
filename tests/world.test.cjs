@@ -475,18 +475,14 @@ test("placement validation handles rotation, access, terrain, slopes, and occupa
   );
 });
 
-test("server construction sessions enforce revision and authoritative validation", () => {
-  const {
-    clearConstructionSessionsForTests,
-    constructForSession,
-  } = require("../world/server/construction-store.ts");
-  const { withStartingSettlement } = require("../world/domain/settlement.ts");
+test("local simulation enforces construction revision and authoritative validation", () => {
+  const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
   const { validatePlacement } = require("../world/domain/construction.ts");
-  clearConstructionSessionsForTests();
-  const settled = withStartingSettlement(world);
-  const road = settled.roads.find(
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const initial = simulation.read(1_000);
+  const road = initial.world.roads.find(
     (road) =>
-      validatePlacement(settled, {
+      validatePlacement(initial.world, {
         type: "house",
         x: road.x + 1,
         y: road.y,
@@ -499,21 +495,37 @@ test("server construction sessions enforce revision and authoritative validation
     y: road.y,
     rotation: "north",
   };
-  const accepted = constructForSession("test-session", 0, placement);
+  const accepted = simulation.execute(
+    { type: "construct", expectedRevision: 0, placement },
+    1_000,
+  );
   assert.equal(accepted.ok, true);
-  assert.equal(accepted.revision, 1);
+  assert.equal(accepted.readModel.revision, 1);
   assert.equal(accepted.building.id, "player-1");
-  const stale = constructForSession("test-session", 0, {
-    ...placement,
-    x: placement.x + 1,
-  });
+  const stale = simulation.execute(
+    {
+      type: "construct",
+      expectedRevision: 0,
+      placement: { ...placement, x: placement.x + 1 },
+    },
+    1_000,
+  );
   assert.equal(stale.status, 409);
-  assert.equal(stale.revision, 1);
-  assert.ok(stale.buildings.some((building) => building.id === "player-1"));
-  const invalid = constructForSession("second-session", 0, {
-    ...placement,
-    x: -5,
-  });
+  assert.equal(stale.readModel.revision, 1);
+  assert.ok(
+    stale.readModel.world.buildings.some(
+      (building) => building.id === "player-1",
+    ),
+  );
+  const secondSimulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const invalid = secondSimulation.execute(
+    {
+      type: "construct",
+      expectedRevision: 0,
+      placement: { ...placement, x: -5 },
+    },
+    1_000,
+  );
   assert.equal(invalid.status, 422);
 });
 
@@ -556,15 +568,10 @@ test("starting producers occupy level resource footprints without changing terra
   assert.deepEqual(withStartingProduction(settled), result);
 });
 
-test("production advances from elapsed server time and explains idle states", () => {
-  const {
-    clearProductionSessionsForTests,
-    collectProduction,
-    productionForSession,
-    setProductionWorkers,
-  } = require("../world/server/production-store.ts");
-  clearProductionSessionsForTests();
-  const initial = productionForSession("production-test", 1_000);
+test("production advances from explicit simulation time and explains idle states", () => {
+  const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const initial = simulation.read(1_000).economy;
   const farm = initial.sites.find((site) => site.type === "farm");
   const lumber = initial.sites.find((site) => site.type === "lumber_camp");
   const quarry = initial.sites.find((site) => site.type === "quarry");
@@ -573,46 +580,40 @@ test("production advances from elapsed server time and explains idle states", ()
   assert.match(lumber.statusReason, /Needs 2 more workers/);
   assert.equal(quarry.status, "storage_full");
   assert.match(quarry.statusReason, /Dispatch stone/);
-  const advanced = productionForSession("production-test", 9_000);
+  const advanced = simulation.read(9_000).economy;
   assert.equal(advanced.sites.find((site) => site.type === "farm").stored, 4);
   assert.equal(
     advanced.sites.find((site) => site.type === "lumber_camp").progressMs,
     0,
   );
-  const staffed = setProductionWorkers(
-    "production-test",
-    lumber.buildingId,
-    2,
+  const staffed = simulation.execute(
+    { type: "set_workers", buildingId: lumber.buildingId, workers: 2 },
     9_000,
   );
   assert.equal(staffed.ok, true);
   assert.equal(
-    staffed.snapshot.sites.find((site) => site.type === "lumber_camp").status,
+    staffed.readModel.economy.sites.find((site) => site.type === "lumber_camp").status,
     "running",
   );
   assert.equal(
-    productionForSession("production-test", 19_000).sites.find(
+    simulation.read(19_000).economy.sites.find(
       (site) => site.type === "lumber_camp",
     ).stored,
     3,
   );
-  const collected = collectProduction(
-    "production-test",
-    quarry.buildingId,
+  const collected = simulation.execute(
+    { type: "dispatch_production", buildingId: quarry.buildingId },
     19_000,
   );
   assert.equal(collected.ok, true);
   assert.equal(collected.collected, 12);
   assert.equal(collected.shipment.status, "in_transit");
-  assert.equal(collected.snapshot.logistics.warehouseInventory.stone, 0);
+  assert.equal(collected.readModel.economy.logistics.warehouseInventory.stone, 0);
   assert.equal(
-    collected.snapshot.sites.find((site) => site.type === "quarry").status,
+    collected.readModel.economy.sites.find((site) => site.type === "quarry").status,
     "running",
   );
-  const delivered = productionForSession(
-    "production-test",
-    collected.shipment.arrivalTime,
-  );
+  const delivered = simulation.read(collected.shipment.arrivalTime).economy;
   assert.equal(delivered.logistics.warehouseInventory.stone, 12);
   assert.equal(
     delivered.logistics.shipments.find(
@@ -621,9 +622,30 @@ test("production advances from elapsed server time and explains idle states", ()
     "arrived",
   );
   assert.equal(
-    setProductionWorkers("production-test", farm.buildingId, 99, 19_000).status,
+    simulation.execute(
+      { type: "set_workers", buildingId: farm.buildingId, workers: 99 },
+      collected.shipment.arrivalTime,
+    ).status,
     422,
   );
+});
+
+test("local authority is deterministic, monotonic, and exports versioned state", () => {
+  const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const first = new LocalGameSimulation(createStartingWorld(), 5_000);
+  const second = new LocalGameSimulation(createStartingWorld(), 5_000);
+  const lumberId = first
+    .read(5_000)
+    .economy.sites.find((site) => site.type === "lumber_camp").buildingId;
+  const command = { type: "set_workers", buildingId: lumberId, workers: 2 };
+  first.execute(command, 6_000);
+  second.execute(command, 6_000);
+  first.read(16_000);
+  second.read(16_000);
+  assert.deepEqual(first.exportSave(), second.exportSave());
+  assert.equal(first.exportSave().saveVersion, 1);
+  assert.doesNotThrow(() => JSON.stringify(first.exportSave()));
+  assert.throws(() => first.read(15_999), /cannot move backward/);
 });
 
 test("logistics routes connect each producer to the settlement road network", () => {
@@ -761,64 +783,68 @@ test("market listings expose price trends, shortages, and actionable opportuniti
 });
 
 test("market sales remove warehouse goods, credit cash, and create events", () => {
-  const {
-    clearProductionSessionsForTests,
-    productionForSession,
-    sellWarehouseGoods,
-  } = require("../world/server/production-store.ts");
-  clearProductionSessionsForTests();
-  const initial = productionForSession("market-session", 1_000);
+  const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const initial = simulation.read(1_000).economy;
   const food = initial.market.listings.find(
     (listing) => listing.commodity === "food",
   );
   assert.equal(initial.market.cashCents, 12_450_00);
   assert.equal(initial.market.opportunities[0].commodity, "wood");
-  const sale = sellWarehouseGoods(
-    "market-session",
-    "food",
-    2,
-    food.priceCents,
+  const sale = simulation.execute(
+    {
+      type: "sell_goods",
+      commodity: "food",
+      quantity: 2,
+      expectedPriceCents: food.priceCents,
+    },
     1_500,
   );
   assert.equal(sale.ok, true);
   assert.equal(sale.revenueCents, food.priceCents * 2);
-  assert.equal(sale.snapshot.logistics.warehouseInventory.food, 6);
+  assert.equal(sale.readModel.economy.logistics.warehouseInventory.food, 6);
   assert.equal(
-    sale.snapshot.market.cashCents,
+    sale.readModel.economy.market.cashCents,
     initial.market.cashCents + sale.revenueCents,
   );
-  assert.match(sale.snapshot.market.events[0].message, /Sold 2 food/);
+  assert.match(sale.readModel.economy.market.events[0].message, /Sold 2 food/);
   assert.equal(
-    sellWarehouseGoods(
-      "market-session",
-      "stone",
-      1,
-      sale.snapshot.market.listings.find(
-        (listing) => listing.commodity === "stone",
-      ).priceCents,
+    simulation.execute(
+      {
+        type: "sell_goods",
+        commodity: "stone",
+        quantity: 1,
+        expectedPriceCents: sale.readModel.economy.market.listings.find(
+          (listing) => listing.commodity === "stone",
+        ).priceCents,
+      },
       2_000,
     ).status,
     422,
   );
   assert.equal(
-    sellWarehouseGoods(
-      "market-session",
-      "food",
-      0,
-      sale.snapshot.market.listings.find(
-        (listing) => listing.commodity === "food",
-      ).priceCents,
+    simulation.execute(
+      {
+        type: "sell_goods",
+        commodity: "food",
+        quantity: 0,
+        expectedPriceCents: sale.readModel.economy.market.listings.find(
+          (listing) => listing.commodity === "food",
+        ).priceCents,
+      },
       2_000,
     ).status,
     400,
   );
-  const staleQuote = sellWarehouseGoods(
-    "market-session",
-    "food",
-    1,
-    food.priceCents,
+  const staleQuote = simulation.execute(
+    {
+      type: "sell_goods",
+      commodity: "food",
+      quantity: 1,
+      expectedPriceCents: food.priceCents,
+    },
     2_000,
   );
   assert.equal(staleQuote.status, 409);
-  assert.ok(staleQuote.snapshot);
+  assert.ok(staleQuote.readModel);
 });

@@ -72,7 +72,7 @@ export type ProductionSite = ProductionState &
   }>;
 
 export type ProductionSnapshot = Readonly<{
-  serverTime: number;
+  simulationTime: number;
   population: number;
   assignedWorkers: number;
   availableWorkers: number;
