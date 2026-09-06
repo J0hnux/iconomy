@@ -36,6 +36,7 @@ import {
   type Viewport,
 } from "./projection";
 import { drawLogistics, drawWorld, type PlacementPreview } from "./render";
+import { PlayerHud, WorldMinimap, BottomHud } from "./hud";
 
 const button =
   "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-amber-200 disabled:opacity-30";
@@ -101,7 +102,10 @@ export default function WorldMap({
     zoom: world.settlement ? 2 : 1,
   });
   const [viewport, setViewport] = useState<Viewport>({ width: 1, height: 1 });
-  const [selected, setSelected] = useState<SurfaceCell | null>(null);
+  const [selected, setSelected] = useState<SurfaceCell | null>(() => {
+    const anchor = initialWorld.settlement?.anchor;
+    return anchor ? initialWorld.cells[anchor.y * initialWorld.size + anchor.x] : null;
+  });
   const [grid, setGrid] = useState(true);
   const [tool, setTool] = useState<"inspect" | "build">("inspect");
   const [buildingType, setBuildingType] = useState<BuildingType>("house");
@@ -115,7 +119,9 @@ export default function WorldMap({
     null,
   );
   const [productionBusy, setProductionBusy] = useState(false);
-  const [marketOpen, setMarketOpen] = useState(true);
+  const [marketOpen, setMarketOpen] = useState(false);
+  const [companyOpen, setCompanyOpen] = useState(false);
+  const sidebarRef = useRef<HTMLElement>(null);
   const [marketMessage, setMarketMessage] = useState<string | null>(null);
   const sessionId = useRef<string | null>(null);
   const drag = useRef<{
@@ -455,10 +461,11 @@ export default function WorldMap({
     point: toScreen({ ...node.anchor, z: node.anchor.z + 2 }, camera, viewport),
   }));
   const chunk = selected ? chunkOf(selected, world.chunkSize) : null;
+  const selectedPlacement = selected ? validatePlacement(world, { type: buildingType, x: selected.x, y: selected.y, rotation }) : null;
 
   return (
-    <main className="flex h-dvh min-h-[520px] flex-col overflow-hidden bg-[#101f25] font-sans text-slate-100">
-      <header className="z-10 flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#101d23] px-5 py-4 sm:px-7">
+    <main className="flex min-h-dvh flex-col md:h-dvh md:min-h-[600px] md:overflow-hidden bg-[#101f25] font-sans text-slate-100">
+      <header className="z-10 flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#101d23] px-4 py-2">
         <div className="flex items-center gap-3">
           <span
             className="flex size-9 items-center justify-center rounded-lg border border-amber-200/30 text-xl text-amber-200"
@@ -471,7 +478,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Spatial prototype / Milestones 0–7
+              Prototype / Milestones 0–8
             </p>
           </div>
         </div>
@@ -480,25 +487,27 @@ export default function WorldMap({
           aria-label="Primary views"
         >
           <button
-            className={`rounded-lg px-4 py-2 text-sm transition ${!marketOpen ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-white/10"}`}
-            onClick={() => setMarketOpen(false)}
+            className={`rounded-lg px-4 py-2 text-sm transition ${!marketOpen && !companyOpen ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-white/10"}`}
+            onClick={() => { setMarketOpen(false); setCompanyOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }}
           >
             Map
           </button>
           <button
             className={`rounded-lg px-4 py-2 text-sm transition ${marketOpen ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-white/10"}`}
-            onClick={() => setMarketOpen(true)}
+            onClick={() => { setMarketOpen(true); setCompanyOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }}
           >
             Market
           </button>
+          <button className={`rounded-lg px-4 py-2 text-sm ${companyOpen ? "bg-sky-600" : "text-slate-300 hover:bg-white/10"}`} onClick={() => { setCompanyOpen(true); setMarketOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }}>Company</button>
         </nav>
         <span className="rounded-full border border-emerald-300/20 bg-emerald-300/5 px-3 py-1.5 text-xs text-emerald-200">
-          {tool === "build" ? "Build tool active" : "Inspect tool"}
+          {production ? new Date(production.serverTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " · " : ""}{tool === "build" ? "Build tool active" : "Local session"}
         </span>
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
+        <PlayerHud world={world} snapshot={production} onCompany={() => { setCompanyOpen(true); setMarketOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }} />
         <section
-          className="relative min-h-[260px] flex-1 overflow-hidden"
+          className="relative min-h-[360px] flex-1 overflow-hidden md:min-h-0"
           aria-label="Isometric world"
         >
           <canvas
@@ -716,7 +725,8 @@ export default function WorldMap({
             </button>
           </div>
         </section>
-        <aside className="z-10 w-full shrink-0 overflow-y-auto border-t border-white/10 bg-[#13242b] p-5 md:w-72 md:border-l md:border-t-0 lg:w-80">
+        <aside ref={sidebarRef} aria-label="World controls and selection" className="z-10 w-full shrink-0 overflow-y-auto border-t border-white/10 bg-[#101e28] p-3 md:w-72 md:border-l md:border-t-0 lg:w-80">
+          <WorldMinimap world={world} camera={camera} viewport={viewport} selected={selected} onNavigate={cell => { setCamera(current => ({ ...current, focus: focusCell(cell) })); }} />
           {marketOpen && production && (
             <section
               className="mb-6 border-b border-white/10 pb-5"
@@ -853,40 +863,9 @@ export default function WorldMap({
                   ))}
                 </div>
               </div>
-              <div className="mt-5">
-                <p className="text-[10px] uppercase tracking-[0.18em] text-slate-300">
-                  Event log
-                </p>
-                <ol className="mt-2 space-y-2">
-                  {production.market.events.map((event) => (
-                    <li
-                      key={event.id}
-                      className="flex gap-3 border-l border-white/10 pl-3 text-[11px] leading-4"
-                    >
-                      <time className="shrink-0 font-mono text-slate-500">
-                        {new Date(event.time).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          second: "2-digit",
-                        })}
-                      </time>
-                      <span
-                        className={
-                          event.category === "market"
-                            ? "text-amber-100"
-                            : event.category === "logistics"
-                              ? "text-cyan-100"
-                              : "text-emerald-100"
-                        }
-                      >
-                        {event.message}
-                      </span>
-                    </li>
-                  ))}
-                </ol>
-              </div>
             </section>
           )}
+          {companyOpen && <div aria-label="Company management">
           {world.settlement && (
             <section
               className="mb-6 border-b border-white/10 pb-5"
@@ -1154,6 +1133,7 @@ export default function WorldMap({
               </p>
             </section>
           )}
+          </div>}
           <section
             className="mb-6 border-b border-white/10 pb-5"
             aria-label="Construction tools"
@@ -1257,6 +1237,11 @@ export default function WorldMap({
               {world.settlement?.name}.
             </p>
           )}
+          {selected && !selectedBuilding && selectedPlacement && <div className="mt-3 rounded-lg border border-white/10 p-3 text-xs">
+            <dl className="space-y-2"><div className="flex justify-between"><dt className="text-slate-400">Terrain</dt><dd>{terrainNames[selected.terrain]}</dd></div><div className="flex justify-between"><dt className="text-slate-400">Road access</dt><dd>{selectedPlacement.reasons.includes("Requires adjacent road access") ? "No adjacent road" : "Connected"}</dd></div><div className="flex justify-between"><dt className="text-slate-400">Buildable ({buildingDefinitions[buildingType].name})</dt><dd>{selectedPlacement.valid ? "Yes" : "No"}</dd></div></dl>
+            <p className="mt-2 text-slate-400">{selectedPlacement.reasons.join(" · ")}</p>
+            <button className={`${button} mt-3 w-full`} disabled={!selectedPlacement.valid} onClick={() => { setTool("build"); setHovered(selected); setBuildMessage("Preview ready. Click the selected footprint to construct."); }}>Build here</button>
+          </div>}
           {selectedProduction && (
             <div className="mt-4 rounded-xl border border-white/10 bg-black/10 p-4">
               <div className="flex items-center justify-between gap-3">
@@ -1488,14 +1473,13 @@ export default function WorldMap({
           </p>
         </aside>
       </div>
-      <footer className="flex flex-wrap justify-between gap-2 border-t border-white/10 bg-[#101d23] px-5 py-2.5 font-mono text-[10px] text-slate-400">
-        <span>SEED / {world.seed}</span>
-        <span>
-          {world.cells.length.toLocaleString("en-US")} CELLS · {world.chunkSize}{" "}
-          × {world.chunkSize}-CELL CHUNKS
-        </span>
-        <span>2:1 ISOMETRIC / CANVAS</span>
-      </footer>
+      <BottomHud snapshot={production}
+        onBuild={() => { setTool("build"); setMarketOpen(false); setCompanyOpen(false); setHovered(null); sidebarRef.current?.scrollTo({ top: 0 }); }}
+        onMarket={() => { setMarketOpen(true); setCompanyOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }}
+        onCompany={() => { setCompanyOpen(true); setMarketOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }}
+        onWarehouse={() => { if (production) focusBuilding(production.logistics.warehouseBuildingId); setMarketOpen(false); setCompanyOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }}
+        onHome={() => { if (world.settlement) setCamera(current => ({ ...current, focus: focusCell(world.settlement!.anchor), zoom: 2 })); }}
+      />
     </main>
   );
 }

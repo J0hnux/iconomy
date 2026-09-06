@@ -99,6 +99,19 @@ The automated tests include footprint validity, unchanged terrain, road connecti
 
 `world/domain/market.ts` owns price formation, shortage classification, listing read models, and opportunity derivation. The production session store advances market ticks and validates warehouse sales alongside production and logistics state.
 
+## Milestone 8: reference HUD skeleton
+
+- The desktop layout follows the reference hierarchy: top Map/Market/Company navigation, left player and warehouse resources, a central world view, right minimap and selection controls, and bottom economy, event log, and actions. Small screens stack the panels and allow page scrolling.
+- Player summary shows session cash, population, free workers, and an estimated net worth consisting of cash plus warehouse, producer, and in-transit goods valued at current quotes. It excludes land and building values. Player and enterprise labels identify the local prototype rather than an authenticated account.
+- The independent minimap draws semantic terrain, the player's settlement, selection, and a ground-plane camera outline. Click a location to pan there, or focus the minimap and press Enter to return to the settlement.
+- Company opens the existing settlement, producer, resource, and shipment management controls. Market retains price trends, sales, and opportunities. Selecting an empty cell shows terrain, road access, and building-specific placement validity with a Build here action.
+- The persistent bottom log filters All events, Market News, and Deliveries. Economy metrics use live local population, workers, producing sites, shortages, and in-transit goods; global CPI, wages, and money supply are not simulated.
+- Bottom actions open Build, Trade, Company, the actual warehouse inspector, or the home camera. Unimplemented actions are omitted. The HUD uses Tailwind and existing server snapshots, with no economy changes or new dependencies.
+
+`presentation/world/hud.tsx` contains the player/resources, minimap, and bottom HUD components. The world controller retains camera, selection, and command ownership.
+
+For HUD verification, navigate using the minimap, compare its view outline before and after zooming, switch Map/Market/Company, filter the bottom log, and use Warehouse and Build actions. Confirm production controls and market commands remain accessible while the world stays visible.
+
 ## Run and verify
 
 ```bash
