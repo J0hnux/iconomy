@@ -24,6 +24,18 @@ A desktop-first browser economy game built with Next.js 16, React 19, TypeScript
 
 The world remains a surface height field, not a collection of individual voxels. No economy, construction, resources, or 3D dependencies were added.
 
+## Milestone 2: terrain and resources
+
+- Two forest regions, Northwood and Eastwood, are semantic forest resource nodes rendered with procedurally scattered tree primitives.
+- Stone Ridge and Iron Heights occupy mountain terrain and use distinct light stone and dark iron markers.
+- Two farmland belts use dedicated terrain semantics and visible crop rows. Crop growth and production are deferred to Milestone 5.
+- Resource nodes own their type, anchor, region size, and estimated reserve. Decorative marker counts do not determine economic quantities.
+- The central settlement reserve remains ordinary grassland, so Novagrad placement is deterministic and existing construction stays valid.
+- The Economic Geography panel focuses each deposit or farmland. World labels and the selected-location inspector expose resource type, estimated reserve, cell count, coordinates, and elevation.
+- Forest, farmland, and mountain cells are excluded from the current generic construction rules.
+
+The renderer maps semantic terrain and resource IDs to primitives. Trees and ore shapes are presentation details and never become authoritative entities.
+
 ## Milestone 3: starting settlement
 
 - Novagrad starts with 10 citizens, one 2×2 Settler Camp, four 1×1 houses, and a 2×2 warehouse.
@@ -33,11 +45,11 @@ The world remains a surface height field, not a collection of individual voxels.
 - Primitive shaded buildings use separate presentation definitions. Building roof and wall picking share geometry and draw order with rendering.
 - A world-anchored Novagrad label selects the camp. The settlement overview shows population and building counts, with a Go to settlement control; the initial camera and reset view focus the settlement.
 - The inspector identifies buildings and shows their purpose, footprint, settlement, and origin coordinates.
-- Milestone 2 resources and farmland remain deferred. Construction, inventory, production, and population growth are not implemented.
+- Construction, inventory, production, and population growth are not implemented in this settlement milestone.
 
 `world/domain/settlement.ts` owns starting settlement generation and building definitions. `presentation/world/buildings.ts` owns primitive building appearance. The server page composes terrain and settlement into one serializable snapshot.
 
-Ten automated tests include footprint validity, unchanged terrain, road connectivity, deterministic settlement placement, safe handling of unavailable sites, and roof/wall picking across zoom levels. Browser checks cover warehouse inspection, panning, and zooming with a selected building.
+The automated tests include footprint validity, unchanged terrain, road connectivity, deterministic settlement placement, safe handling of unavailable sites, and roof/wall picking across zoom levels. Browser checks cover warehouse inspection, panning, and zooming with a selected building.
 
 ## Milestone 4: build interaction
 
