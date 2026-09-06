@@ -112,6 +112,16 @@ The automated tests include footprint validity, unchanged terrain, road connecti
 
 For HUD verification, navigate using the minimap, compare its view outline before and after zooming, switch Map/Market/Company, filter the bottom log, and use Warehouse and Build actions. Confirm production controls and market commands remain accessible while the world stays visible.
 
+## Milestone 9: chunk awareness
+
+- World generation now publishes deterministic 32×32 chunk regions with stable IDs and clipped bounds at uneven world edges. Cells remain in the existing flat semantic snapshot, so chunk awareness does not couple the domain to Canvas or duplicate world data.
+- The presentation layer converts the camera viewport into a conservative set of visible chunks, including elevation and a one-chunk safety margin. Terrain drawing, building drawing, logistics overlays, and pointer picking work from this scene window instead of scanning every world cell.
+- Per-world chunk cell indexes and maximum elevation are cached from immutable snapshots. The active scene is recalculated only when the world, camera, or viewport changes.
+- The Map layers panel can show cyan chunk boundaries and stable chunk IDs. Both the sidebar and economy HUD report visible chunks, tiles, and buildings so culling can be checked while panning and zooming.
+- This milestone adds local render culling only. Chunks do not load over the network, unload authoritative state, or change simulation ownership.
+
+For chunk verification, enable Chunk boundaries, pan across a boundary, and compare the cyan IDs with the visible-scene counters. Zoom in to confirm the active tile count falls below the 16,384-cell world total, then zoom and pan along cliffs and confirm terrain, buildings, selection, routes, and shipment markers remain intact at scene edges.
+
 ## Run and verify
 
 ```bash
@@ -134,10 +144,10 @@ For the market, choose Market in the top navigation. Compare each price trend an
 
 ## Architecture and scope
 
-`world/domain/world.ts` generates a serializable, read-only semantic snapshot on the server page. Logical cells never contain screen positions or renderer objects. Chunks are currently derived addresses, not streamed storage.
+`world/domain/world.ts` generates a serializable, read-only semantic snapshot on the server page. Logical cells never contain screen positions or renderer objects. The snapshot includes compact chunk region metadata; cells remain flat authoritative data rather than streamed storage.
 
-`presentation/world/projection.ts` owns coordinate transforms, bounded camera operations, and elevated terrain face picking. `render.ts` maps semantic terrain to shaded Canvas top and cliff polygons. `world-map.tsx` owns presentation-only camera, selection, and UI state. Rendering runs when those inputs change rather than in a perpetual simulation loop.
+`presentation/world/projection.ts` owns coordinate transforms, bounded camera operations, visible chunk selection, and elevated terrain face picking. `render.ts` maps the visible semantic scene to shaded Canvas top and cliff polygons. `world-map.tsx` owns presentation-only camera, selection, and UI state. Rendering runs when those inputs change rather than in a perpetual simulation loop.
 
-The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry and depth ordering remain presentation responsibilities. Picking scans cells in reverse painter order with a bounds check; chunk-level acceleration is deferred until profiling justifies it. Construction, production, shipments, warehouse arrivals, market ticks, and sales cross server validation boundaries, while persistence, multiplayer, authentication, competing companies, and ownership remain unimplemented.
+The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry, visible scene selection, and depth ordering remain presentation responsibilities. Picking scans only visible chunk cells in reverse painter order with a bounds check. Construction, production, shipments, warehouse arrivals, market ticks, and sales cross server validation boundaries, while persistence, multiplayer, authentication, competing companies, and ownership remain unimplemented.
 
 The blueprint and reference image describe the long-term destination, not the current art target.

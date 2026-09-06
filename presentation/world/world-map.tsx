@@ -31,6 +31,7 @@ import {
   focusCell,
   panCamera,
   pickCell,
+  visibleScene,
   zoomCamera,
   type Camera,
   type Viewport,
@@ -104,9 +105,12 @@ export default function WorldMap({
   const [viewport, setViewport] = useState<Viewport>({ width: 1, height: 1 });
   const [selected, setSelected] = useState<SurfaceCell | null>(() => {
     const anchor = initialWorld.settlement?.anchor;
-    return anchor ? initialWorld.cells[anchor.y * initialWorld.size + anchor.x] : null;
+    return anchor
+      ? initialWorld.cells[anchor.y * initialWorld.size + anchor.x]
+      : null;
   });
   const [grid, setGrid] = useState(true);
+  const [showChunks, setShowChunks] = useState(false);
   const [tool, setTool] = useState<"inspect" | "build">("inspect");
   const [buildingType, setBuildingType] = useState<BuildingType>("house");
   const [rotation, setRotation] = useState<BuildingRotation>("north");
@@ -143,6 +147,18 @@ export default function WorldMap({
     };
     return { request, validation: validatePlacement(world, request) };
   }, [tool, hovered, buildingType, rotation, world]);
+  const scene = useMemo(
+    () => visibleScene(world, camera, viewport),
+    [world, camera, viewport],
+  );
+  const visibleBuildingCount = useMemo(
+    () =>
+      (world.buildings ?? []).filter((building) => {
+        const chunk = chunkOf(building, world.chunkSize);
+        return scene.chunkIds.has(`${chunk.x},${chunk.y}`);
+      }).length,
+    [world, scene],
+  );
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -178,8 +194,20 @@ export default function WorldMap({
       grid,
       placement,
       production,
+      scene,
+      showChunks,
     );
-  }, [world, camera, viewport, selected, grid, placement, production]);
+  }, [
+    world,
+    camera,
+    viewport,
+    selected,
+    grid,
+    placement,
+    production,
+    scene,
+    showChunks,
+  ]);
 
   useEffect(() => {
     const canvas = logisticsCanvasRef.current;
@@ -195,7 +223,7 @@ export default function WorldMap({
     let frame = 0;
     const draw = () => {
       const now = Date.now() + serverOffset;
-      drawLogistics(ctx, world, camera, viewport, production, now);
+      drawLogistics(ctx, world, camera, viewport, production, now, scene);
       const moving = production.logistics.shipments.some(
         (shipment) =>
           shipment.status === "in_transit" ||
@@ -206,7 +234,7 @@ export default function WorldMap({
     };
     draw();
     return () => window.cancelAnimationFrame(frame);
-  }, [world, camera, viewport, production]);
+  }, [world, camera, viewport, production, scene]);
 
   useEffect(() => {
     sessionId.current ??= crypto.randomUUID();
@@ -461,7 +489,14 @@ export default function WorldMap({
     point: toScreen({ ...node.anchor, z: node.anchor.z + 2 }, camera, viewport),
   }));
   const chunk = selected ? chunkOf(selected, world.chunkSize) : null;
-  const selectedPlacement = selected ? validatePlacement(world, { type: buildingType, x: selected.x, y: selected.y, rotation }) : null;
+  const selectedPlacement = selected
+    ? validatePlacement(world, {
+        type: buildingType,
+        x: selected.x,
+        y: selected.y,
+        rotation,
+      })
+    : null;
 
   return (
     <main className="flex min-h-dvh flex-col md:h-dvh md:min-h-[600px] md:overflow-hidden bg-[#101f25] font-sans text-slate-100">
@@ -488,24 +523,55 @@ export default function WorldMap({
         >
           <button
             className={`rounded-lg px-4 py-2 text-sm transition ${!marketOpen && !companyOpen ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-white/10"}`}
-            onClick={() => { setMarketOpen(false); setCompanyOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }}
+            onClick={() => {
+              setMarketOpen(false);
+              setCompanyOpen(false);
+              sidebarRef.current?.scrollTo({ top: 0 });
+            }}
           >
             Map
           </button>
           <button
             className={`rounded-lg px-4 py-2 text-sm transition ${marketOpen ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-white/10"}`}
-            onClick={() => { setMarketOpen(true); setCompanyOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }}
+            onClick={() => {
+              setMarketOpen(true);
+              setCompanyOpen(false);
+              sidebarRef.current?.scrollTo({ top: 0 });
+            }}
           >
             Market
           </button>
-          <button className={`rounded-lg px-4 py-2 text-sm ${companyOpen ? "bg-sky-600" : "text-slate-300 hover:bg-white/10"}`} onClick={() => { setCompanyOpen(true); setMarketOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }}>Company</button>
+          <button
+            className={`rounded-lg px-4 py-2 text-sm ${companyOpen ? "bg-sky-600" : "text-slate-300 hover:bg-white/10"}`}
+            onClick={() => {
+              setCompanyOpen(true);
+              setMarketOpen(false);
+              sidebarRef.current?.scrollTo({ top: 0 });
+            }}
+          >
+            Company
+          </button>
         </nav>
         <span className="rounded-full border border-emerald-300/20 bg-emerald-300/5 px-3 py-1.5 text-xs text-emerald-200">
-          {production ? new Date(production.serverTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " · " : ""}{tool === "build" ? "Build tool active" : "Local session"}
+          {production
+            ? new Date(production.serverTime).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              }) + " · "
+            : ""}
+          {tool === "build" ? "Build tool active" : "Local session"}
         </span>
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
-        <PlayerHud world={world} snapshot={production} onCompany={() => { setCompanyOpen(true); setMarketOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }} />
+        <PlayerHud
+          world={world}
+          snapshot={production}
+          onCompany={() => {
+            setCompanyOpen(true);
+            setMarketOpen(false);
+            sidebarRef.current?.scrollTo({ top: 0 });
+          }}
+        />
         <section
           className="relative min-h-[360px] flex-1 overflow-hidden md:min-h-0"
           aria-label="Isometric world"
@@ -540,6 +606,7 @@ export default function WorldMap({
                     camera,
                     viewport,
                     world,
+                    scene,
                   ),
                 );
               }
@@ -575,6 +642,7 @@ export default function WorldMap({
                   camera,
                   viewport,
                   world,
+                  scene,
                 );
                 if (tool === "build") void confirmPlacement(candidate);
                 else setSelected(candidate);
@@ -615,6 +683,7 @@ export default function WorldMap({
                     camera,
                     viewport,
                     world,
+                    scene,
                   );
                   if (tool === "build") void confirmPlacement(candidate);
                   else setSelected(candidate);
@@ -725,8 +794,20 @@ export default function WorldMap({
             </button>
           </div>
         </section>
-        <aside ref={sidebarRef} aria-label="World controls and selection" className="z-10 w-full shrink-0 overflow-y-auto border-t border-white/10 bg-[#101e28] p-3 md:w-72 md:border-l md:border-t-0 lg:w-80">
-          <WorldMinimap world={world} camera={camera} viewport={viewport} selected={selected} onNavigate={cell => { setCamera(current => ({ ...current, focus: focusCell(cell) })); }} />
+        <aside
+          ref={sidebarRef}
+          aria-label="World controls and selection"
+          className="z-10 w-full shrink-0 overflow-y-auto border-t border-white/10 bg-[#101e28] p-3 md:w-72 md:border-l md:border-t-0 lg:w-80"
+        >
+          <WorldMinimap
+            world={world}
+            camera={camera}
+            viewport={viewport}
+            selected={selected}
+            onNavigate={(cell) => {
+              setCamera((current) => ({ ...current, focus: focusCell(cell) }));
+            }}
+          />
           {marketOpen && production && (
             <section
               className="mb-6 border-b border-white/10 pb-5"
@@ -865,275 +946,283 @@ export default function WorldMap({
               </div>
             </section>
           )}
-          {companyOpen && <div aria-label="Company management">
-          {world.settlement && (
-            <section
-              className="mb-6 border-b border-white/10 pb-5"
-              aria-label="Settlement overview"
-            >
-              <p className="text-[10px] uppercase tracking-[0.2em] text-amber-200">
-                Starting settlement
-              </p>
-              <h2 className="mt-2 text-xl font-semibold">
-                {world.settlement.name}
-              </h2>
-              <p className="mt-2 text-sm text-slate-300">
-                Population: {world.settlement.population} citizens
-              </p>
-              <p className="mt-1 text-xs text-slate-400">
-                {
-                  world.buildings?.filter(
-                    (building) => building.type === "camp",
-                  ).length
-                }{" "}
-                camp ·{" "}
-                {
-                  world.buildings?.filter(
-                    (building) => building.type === "house",
-                  ).length
-                }{" "}
-                houses ·{" "}
-                {
-                  world.buildings?.filter(
-                    (building) => building.type === "warehouse",
-                  ).length
-                }{" "}
-                warehouse ·{" "}
-                {
-                  world.buildings?.filter(
-                    (building) => building.type === "workshop",
-                  ).length
-                }{" "}
-                workshops
-              </p>
-              <button
-                className={`${button} mt-3 w-full`}
-                onClick={() =>
-                  setCamera((current) => ({
-                    ...current,
-                    focus: focusCell(world.settlement!.anchor),
-                    zoom: 2,
-                  }))
-                }
-              >
-                Go to settlement
-              </button>
-            </section>
-          )}
-          <section
-            className="mb-6 border-b border-white/10 pb-5"
-            aria-label="Economic geography"
-          >
-            <p className="text-[10px] uppercase tracking-[0.2em] text-emerald-200">
-              Economic geography
-            </p>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              {world.resourceNodes.map((node) => (
-                <button
-                  key={node.id}
-                  className={`${button} px-2 text-left`}
-                  onClick={() => {
-                    setTool("inspect");
-                    setSelected(
-                      world.cells[node.anchor.y * world.size + node.anchor.x],
-                    );
-                    setCamera((current) => ({
-                      ...current,
-                      focus: focusCell(node.anchor),
-                      zoom: Math.max(current.zoom, 1.2),
-                    }));
-                  }}
+          {companyOpen && (
+            <div aria-label="Company management">
+              {world.settlement && (
+                <section
+                  className="mb-6 border-b border-white/10 pb-5"
+                  aria-label="Settlement overview"
                 >
-                  <span className="block text-xs font-medium">{node.name}</span>
-                  <span className="mt-1 block text-[10px] capitalize text-slate-400">
-                    {node.type} · {node.cellCount} cells
-                  </span>
-                </button>
-              ))}
-            </div>
-            <button
-              className={`${button} mt-2 w-full text-left`}
-              onClick={() => {
-                const farm = world.cells.find(
-                  (cell) => cell.terrain === "farmland",
-                );
-                if (farm) {
-                  setTool("inspect");
-                  setSelected(farm);
-                  setCamera((current) => ({
-                    ...current,
-                    focus: focusCell(farm),
-                    zoom: Math.max(current.zoom, 1.2),
-                  }));
-                }
-              }}
-            >
-              View farmland
-            </button>
-          </section>
-          <section
-            className="mb-6 border-b border-white/10 pb-5"
-            aria-label="Production overview"
-          >
-            <div className="flex items-end justify-between gap-3">
-              <div>
-                <p className="text-[10px] uppercase tracking-[0.2em] text-sky-200">
-                  Production
-                </p>
-                <h2 className="mt-1 text-lg font-semibold">
-                  Novagrad industry
-                </h2>
-              </div>
-              {production && (
-                <span className="text-xs text-slate-400">
-                  {production.availableWorkers} / {production.population} free
-                </span>
-              )}
-            </div>
-            <div className="mt-3 space-y-2">
-              {production?.sites.map((site) => {
-                const building = world.buildings?.find(
-                  (candidate) => candidate.id === site.buildingId,
-                );
-                const statusLabel =
-                  site.status === "running"
-                    ? "Running"
-                    : site.status === "missing_workers"
-                      ? "Missing workers"
-                      : "Storage full";
-                return (
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-amber-200">
+                    Starting settlement
+                  </p>
+                  <h2 className="mt-2 text-xl font-semibold">
+                    {world.settlement.name}
+                  </h2>
+                  <p className="mt-2 text-sm text-slate-300">
+                    Population: {world.settlement.population} citizens
+                  </p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    {
+                      world.buildings?.filter(
+                        (building) => building.type === "camp",
+                      ).length
+                    }{" "}
+                    camp ·{" "}
+                    {
+                      world.buildings?.filter(
+                        (building) => building.type === "house",
+                      ).length
+                    }{" "}
+                    houses ·{" "}
+                    {
+                      world.buildings?.filter(
+                        (building) => building.type === "warehouse",
+                      ).length
+                    }{" "}
+                    warehouse ·{" "}
+                    {
+                      world.buildings?.filter(
+                        (building) => building.type === "workshop",
+                      ).length
+                    }{" "}
+                    workshops
+                  </p>
                   <button
-                    key={site.buildingId}
-                    className={`${button} flex w-full items-center justify-between gap-3 text-left`}
-                    onClick={() => {
-                      if (!building) return;
-                      setTool("inspect");
-                      setSelected(
-                        world.cells[building.y * world.size + building.x],
-                      );
+                    className={`${button} mt-3 w-full`}
+                    onClick={() =>
                       setCamera((current) => ({
                         ...current,
-                        focus: focusCell(building),
-                        zoom: Math.max(current.zoom, 1.35),
-                      }));
-                    }}
+                        focus: focusCell(world.settlement!.anchor),
+                        zoom: 2,
+                      }))
+                    }
                   >
-                    <span>
-                      <span className="block text-xs font-medium">
-                        {site.name}
-                      </span>
-                      <span className="mt-1 block text-[10px] text-slate-400">
-                        {site.assignedWorkers}/{site.requiredWorkers} workers ·{" "}
-                        {site.stored}/{site.storageCapacity} {site.output}
-                      </span>
-                    </span>
-                    <span
-                      className={`shrink-0 text-[10px] ${site.status === "running" ? "text-emerald-300" : site.status === "missing_workers" ? "text-amber-300" : "text-red-300"}`}
-                    >
-                      ● {statusLabel}
-                    </span>
+                    Go to settlement
                   </button>
-                );
-              }) ?? (
-                <p className="text-xs text-slate-400">
-                  Connecting to the production server…
-                </p>
+                </section>
               )}
-            </div>
-          </section>
-          {production && (
-            <section
-              className="mb-6 border-b border-white/10 pb-5"
-              aria-label="Logistics overview"
-            >
-              <div className="flex items-end justify-between gap-3">
-                <div>
-                  <p className="text-[10px] uppercase tracking-[0.2em] text-cyan-200">
-                    Logistics
-                  </p>
-                  <h2 className="mt-1 text-lg font-semibold">
-                    Warehouse network
-                  </h2>
-                </div>
-                <span className="text-xs text-slate-400">
-                  {
-                    production.logistics.shipments.filter(
-                      (shipment) => shipment.status === "in_transit",
-                    ).length
-                  }{" "}
-                  moving
-                </span>
-              </div>
-              <div className="mt-3 grid grid-cols-3 gap-2">
-                {Object.entries(production.logistics.warehouseInventory).map(
-                  ([commodity, quantity]) => (
-                    <div
-                      key={commodity}
-                      className="rounded-lg border border-white/10 bg-black/10 p-2 text-center"
+              <section
+                className="mb-6 border-b border-white/10 pb-5"
+                aria-label="Economic geography"
+              >
+                <p className="text-[10px] uppercase tracking-[0.2em] text-emerald-200">
+                  Economic geography
+                </p>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {world.resourceNodes.map((node) => (
+                    <button
+                      key={node.id}
+                      className={`${button} px-2 text-left`}
+                      onClick={() => {
+                        setTool("inspect");
+                        setSelected(
+                          world.cells[
+                            node.anchor.y * world.size + node.anchor.x
+                          ],
+                        );
+                        setCamera((current) => ({
+                          ...current,
+                          focus: focusCell(node.anchor),
+                          zoom: Math.max(current.zoom, 1.2),
+                        }));
+                      }}
                     >
-                      <span className="block font-mono text-base text-cyan-100">
-                        {quantity}
+                      <span className="block text-xs font-medium">
+                        {node.name}
                       </span>
-                      <span className="text-[10px] capitalize text-slate-400">
-                        {commodity}
+                      <span className="mt-1 block text-[10px] capitalize text-slate-400">
+                        {node.type} · {node.cellCount} cells
                       </span>
-                    </div>
-                  ),
-                )}
-              </div>
-              <div className="mt-3 space-y-2">
-                {production.logistics.shipments
-                  .slice(-4)
-                  .reverse()
-                  .map((shipment) => {
-                    const route = production.logistics.routes.find(
-                      (candidate) => candidate.id === shipment.routeId,
+                    </button>
+                  ))}
+                </div>
+                <button
+                  className={`${button} mt-2 w-full text-left`}
+                  onClick={() => {
+                    const farm = world.cells.find(
+                      (cell) => cell.terrain === "farmland",
                     );
+                    if (farm) {
+                      setTool("inspect");
+                      setSelected(farm);
+                      setCamera((current) => ({
+                        ...current,
+                        focus: focusCell(farm),
+                        zoom: Math.max(current.zoom, 1.2),
+                      }));
+                    }
+                  }}
+                >
+                  View farmland
+                </button>
+              </section>
+              <section
+                className="mb-6 border-b border-white/10 pb-5"
+                aria-label="Production overview"
+              >
+                <div className="flex items-end justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-sky-200">
+                      Production
+                    </p>
+                    <h2 className="mt-1 text-lg font-semibold">
+                      Novagrad industry
+                    </h2>
+                  </div>
+                  {production && (
+                    <span className="text-xs text-slate-400">
+                      {production.availableWorkers} / {production.population}{" "}
+                      free
+                    </span>
+                  )}
+                </div>
+                <div className="mt-3 space-y-2">
+                  {production?.sites.map((site) => {
+                    const building = world.buildings?.find(
+                      (candidate) => candidate.id === site.buildingId,
+                    );
+                    const statusLabel =
+                      site.status === "running"
+                        ? "Running"
+                        : site.status === "missing_workers"
+                          ? "Missing workers"
+                          : "Storage full";
                     return (
                       <button
-                        key={shipment.id}
+                        key={site.buildingId}
                         className={`${button} flex w-full items-center justify-between gap-3 text-left`}
                         onClick={() => {
-                          const midpoint =
-                            route?.path[Math.floor(route.path.length / 2)];
-                          if (midpoint)
-                            setCamera((current) => ({
-                              ...current,
-                              focus: focusCell(midpoint),
-                              zoom: Math.max(current.zoom, 1.2),
-                            }));
+                          if (!building) return;
+                          setTool("inspect");
+                          setSelected(
+                            world.cells[building.y * world.size + building.x],
+                          );
+                          setCamera((current) => ({
+                            ...current,
+                            focus: focusCell(building),
+                            zoom: Math.max(current.zoom, 1.35),
+                          }));
                         }}
                       >
                         <span>
                           <span className="block text-xs font-medium">
-                            {shipment.cargo.quantity}{" "}
-                            <span className="capitalize">
-                              {shipment.cargo.commodity}
-                            </span>
+                            {site.name}
                           </span>
                           <span className="mt-1 block text-[10px] text-slate-400">
-                            {route?.name ?? "Warehouse route"}
+                            {site.assignedWorkers}/{site.requiredWorkers}{" "}
+                            workers · {site.stored}/{site.storageCapacity}{" "}
+                            {site.output}
                           </span>
                         </span>
                         <span
-                          className={`text-[10px] ${shipment.status === "in_transit" ? "text-cyan-300" : "text-emerald-300"}`}
+                          className={`shrink-0 text-[10px] ${site.status === "running" ? "text-emerald-300" : site.status === "missing_workers" ? "text-amber-300" : "text-red-300"}`}
                         >
-                          {shipment.status === "in_transit"
-                            ? "● In transit"
-                            : "✓ Arrived"}
+                          ● {statusLabel}
                         </span>
                       </button>
                     );
-                  })}
-              </div>
-              <p className="mt-3 text-[11px] leading-5 text-slate-400">
-                Dashed route lines follow connected road cells. Cargo enters
-                warehouse inventory only when the server marks its shipment
-                arrived.
-              </p>
-            </section>
+                  }) ?? (
+                    <p className="text-xs text-slate-400">
+                      Connecting to the production server…
+                    </p>
+                  )}
+                </div>
+              </section>
+              {production && (
+                <section
+                  className="mb-6 border-b border-white/10 pb-5"
+                  aria-label="Logistics overview"
+                >
+                  <div className="flex items-end justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] uppercase tracking-[0.2em] text-cyan-200">
+                        Logistics
+                      </p>
+                      <h2 className="mt-1 text-lg font-semibold">
+                        Warehouse network
+                      </h2>
+                    </div>
+                    <span className="text-xs text-slate-400">
+                      {
+                        production.logistics.shipments.filter(
+                          (shipment) => shipment.status === "in_transit",
+                        ).length
+                      }{" "}
+                      moving
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-3 gap-2">
+                    {Object.entries(
+                      production.logistics.warehouseInventory,
+                    ).map(([commodity, quantity]) => (
+                      <div
+                        key={commodity}
+                        className="rounded-lg border border-white/10 bg-black/10 p-2 text-center"
+                      >
+                        <span className="block font-mono text-base text-cyan-100">
+                          {quantity}
+                        </span>
+                        <span className="text-[10px] capitalize text-slate-400">
+                          {commodity}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {production.logistics.shipments
+                      .slice(-4)
+                      .reverse()
+                      .map((shipment) => {
+                        const route = production.logistics.routes.find(
+                          (candidate) => candidate.id === shipment.routeId,
+                        );
+                        return (
+                          <button
+                            key={shipment.id}
+                            className={`${button} flex w-full items-center justify-between gap-3 text-left`}
+                            onClick={() => {
+                              const midpoint =
+                                route?.path[Math.floor(route.path.length / 2)];
+                              if (midpoint)
+                                setCamera((current) => ({
+                                  ...current,
+                                  focus: focusCell(midpoint),
+                                  zoom: Math.max(current.zoom, 1.2),
+                                }));
+                            }}
+                          >
+                            <span>
+                              <span className="block text-xs font-medium">
+                                {shipment.cargo.quantity}{" "}
+                                <span className="capitalize">
+                                  {shipment.cargo.commodity}
+                                </span>
+                              </span>
+                              <span className="mt-1 block text-[10px] text-slate-400">
+                                {route?.name ?? "Warehouse route"}
+                              </span>
+                            </span>
+                            <span
+                              className={`text-[10px] ${shipment.status === "in_transit" ? "text-cyan-300" : "text-emerald-300"}`}
+                            >
+                              {shipment.status === "in_transit"
+                                ? "● In transit"
+                                : "✓ Arrived"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                  </div>
+                  <p className="mt-3 text-[11px] leading-5 text-slate-400">
+                    Dashed route lines follow connected road cells. Cargo enters
+                    warehouse inventory only when the server marks its shipment
+                    arrived.
+                  </p>
+                </section>
+              )}
+            </div>
           )}
-          </div>}
           <section
             className="mb-6 border-b border-white/10 pb-5"
             aria-label="Construction tools"
@@ -1237,11 +1326,48 @@ export default function WorldMap({
               {world.settlement?.name}.
             </p>
           )}
-          {selected && !selectedBuilding && selectedPlacement && <div className="mt-3 rounded-lg border border-white/10 p-3 text-xs">
-            <dl className="space-y-2"><div className="flex justify-between"><dt className="text-slate-400">Terrain</dt><dd>{terrainNames[selected.terrain]}</dd></div><div className="flex justify-between"><dt className="text-slate-400">Road access</dt><dd>{selectedPlacement.reasons.includes("Requires adjacent road access") ? "No adjacent road" : "Connected"}</dd></div><div className="flex justify-between"><dt className="text-slate-400">Buildable ({buildingDefinitions[buildingType].name})</dt><dd>{selectedPlacement.valid ? "Yes" : "No"}</dd></div></dl>
-            <p className="mt-2 text-slate-400">{selectedPlacement.reasons.join(" · ")}</p>
-            <button className={`${button} mt-3 w-full`} disabled={!selectedPlacement.valid} onClick={() => { setTool("build"); setHovered(selected); setBuildMessage("Preview ready. Click the selected footprint to construct."); }}>Build here</button>
-          </div>}
+          {selected && !selectedBuilding && selectedPlacement && (
+            <div className="mt-3 rounded-lg border border-white/10 p-3 text-xs">
+              <dl className="space-y-2">
+                <div className="flex justify-between">
+                  <dt className="text-slate-400">Terrain</dt>
+                  <dd>{terrainNames[selected.terrain]}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-slate-400">Road access</dt>
+                  <dd>
+                    {selectedPlacement.reasons.includes(
+                      "Requires adjacent road access",
+                    )
+                      ? "No adjacent road"
+                      : "Connected"}
+                  </dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-slate-400">
+                    Buildable ({buildingDefinitions[buildingType].name})
+                  </dt>
+                  <dd>{selectedPlacement.valid ? "Yes" : "No"}</dd>
+                </div>
+              </dl>
+              <p className="mt-2 text-slate-400">
+                {selectedPlacement.reasons.join(" · ")}
+              </p>
+              <button
+                className={`${button} mt-3 w-full`}
+                disabled={!selectedPlacement.valid}
+                onClick={() => {
+                  setTool("build");
+                  setHovered(selected);
+                  setBuildMessage(
+                    "Preview ready. Click the selected footprint to construct.",
+                  );
+                }}
+              >
+                Build here
+              </button>
+            </div>
+          )}
           {selectedProduction && (
             <div className="mt-4 rounded-xl border border-white/10 bg-black/10 p-4">
               <div className="flex items-center justify-between gap-3">
@@ -1437,6 +1563,19 @@ export default function WorldMap({
                 className="size-4 accent-amber-200"
               />
             </label>
+            <label className="mt-4 flex cursor-pointer items-center justify-between text-sm text-slate-400">
+              Chunk boundaries
+              <input
+                type="checkbox"
+                checked={showChunks}
+                onChange={(event) => setShowChunks(event.target.checked)}
+                className="size-4 accent-cyan-300"
+              />
+            </label>
+            <p className="mt-3 font-mono text-[10px] text-cyan-200/80">
+              Visible: {scene.chunks.length} / {world.chunks.length} chunks ·{" "}
+              {scene.cells.length.toLocaleString("en-US")} tiles
+            </p>
             <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-400">
               <span>
                 <span className="mr-2 inline-block size-2.5 rounded-sm bg-[#718e6c]" />
@@ -1473,12 +1612,46 @@ export default function WorldMap({
           </p>
         </aside>
       </div>
-      <BottomHud snapshot={production}
-        onBuild={() => { setTool("build"); setMarketOpen(false); setCompanyOpen(false); setHovered(null); sidebarRef.current?.scrollTo({ top: 0 }); }}
-        onMarket={() => { setMarketOpen(true); setCompanyOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }}
-        onCompany={() => { setCompanyOpen(true); setMarketOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }}
-        onWarehouse={() => { if (production) focusBuilding(production.logistics.warehouseBuildingId); setMarketOpen(false); setCompanyOpen(false); sidebarRef.current?.scrollTo({ top: 0 }); }}
-        onHome={() => { if (world.settlement) setCamera(current => ({ ...current, focus: focusCell(world.settlement!.anchor), zoom: 2 })); }}
+      <BottomHud
+        snapshot={production}
+        scene={{
+          chunks: scene.chunks.length,
+          totalChunks: world.chunks.length,
+          tiles: scene.cells.length,
+          buildings: visibleBuildingCount,
+        }}
+        onBuild={() => {
+          setTool("build");
+          setMarketOpen(false);
+          setCompanyOpen(false);
+          setHovered(null);
+          sidebarRef.current?.scrollTo({ top: 0 });
+        }}
+        onMarket={() => {
+          setMarketOpen(true);
+          setCompanyOpen(false);
+          sidebarRef.current?.scrollTo({ top: 0 });
+        }}
+        onCompany={() => {
+          setCompanyOpen(true);
+          setMarketOpen(false);
+          sidebarRef.current?.scrollTo({ top: 0 });
+        }}
+        onWarehouse={() => {
+          if (production)
+            focusBuilding(production.logistics.warehouseBuildingId);
+          setMarketOpen(false);
+          setCompanyOpen(false);
+          sidebarRef.current?.scrollTo({ top: 0 });
+        }}
+        onHome={() => {
+          if (world.settlement)
+            setCamera((current) => ({
+              ...current,
+              focus: focusCell(world.settlement!.anchor),
+              zoom: 2,
+            }));
+        }}
       />
     </main>
   );

@@ -3,7 +3,8 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "OpenWorld Economy | World Explorer",
-  description: "Explore a deterministic isometric world. Pan, zoom, and inspect terrain coordinates in the OpenWorld Economy spatial prototype.",
+  description:
+    "Explore a deterministic isometric world. Pan, zoom, and inspect terrain coordinates in the OpenWorld Economy spatial prototype.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
