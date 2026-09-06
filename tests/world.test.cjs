@@ -7,20 +7,53 @@ const ts = require('typescript');
 require.extensions['.ts'] = (module, filename) => {
   module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2017 } }).outputText, filename);
 };
-const { generateWorld, chunkOf } = require('../world/domain/world.ts');
+const { generateWorld, chunkOf, resourceAt } = require('../world/domain/world.ts');
 const { project, unproject, toScreen, screenToWorld, pickCell, panCamera, zoomCamera, focusCell, terrainFaces } = require('../presentation/world/projection.ts');
 const world = generateWorld();
 const viewport = { width: 1100, height: 700 };
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} != ${b}`);
 
-test('seeded semantic world is repeatable, bounded, elevated, and includes land/water/mountains', () => {
+test('seeded semantic world is repeatable, bounded, elevated, and includes economic terrain', () => {
   assert.deepEqual(generateWorld(), world);
   assert.notDeepEqual(generateWorld('another-seed'), world);
   assert.equal(world.cells.length, 128 * 128);
-  assert.deepEqual(new Set(world.cells.map(c => c.terrain)), new Set(['grassland', 'water', 'mountain']));
+  assert.deepEqual(new Set(world.cells.map(c => c.terrain)), new Set(['grassland', 'water', 'mountain', 'forest_ground', 'farmland']));
   for (const cell of world.cells) { assert.ok(Number.isInteger(cell.z) && cell.z >= 0); if (cell.terrain === "water") assert.equal(cell.z, 0); else assert.ok(cell.z >= 1); assert.ok(cell.x >= 0 && cell.x < 128 && cell.y >= 0 && cell.y < 128); }
   assert.deepEqual(chunkOf({ x: 32, y: 63, z: 0 }, 32), { x: 1, y: 1 });
   assert.throws(() => generateWorld('seed', 0), RangeError);
+});
+
+test('resource nodes reference matching cells and preserve semantic reserves', () => {
+  assert.deepEqual(world.resourceNodes.map(node => node.type).sort(), ['forest', 'forest', 'iron', 'stone']);
+  for (const node of world.resourceNodes) {
+    const cells = world.cells.filter(cell => cell.resourceNodeId === node.id);
+    assert.equal(cells.length, node.cellCount);
+    assert.ok(node.estimatedReserve > node.cellCount);
+    const anchor = world.cells[node.anchor.y * world.size + node.anchor.x];
+    assert.equal(anchor.resourceNodeId, node.id);
+    assert.equal(resourceAt(world, anchor), node);
+    if (node.type === 'forest') assert.ok(cells.every(cell => cell.terrain === 'forest_ground'));
+    else assert.ok(cells.every(cell => cell.terrain === 'mountain'));
+  }
+  assert.ok(world.cells.some(cell => cell.terrain === 'farmland' && !cell.resourceNodeId));
+  assert.ok(world.cells.some(cell => cell.terrain === 'forest_ground'));
+});
+
+test('settlement reserve stays grassland and construction rejects economic terrain', () => {
+  const { withStartingSettlement, buildingDefinitions } = require('../world/domain/settlement.ts');
+  const { validatePlacement } = require('../world/domain/construction.ts');
+  const settled = withStartingSettlement(world);
+  for (const building of settled.buildings) {
+    const definition = buildingDefinitions[building.type];
+    for (let y = building.y; y < building.y + definition.depth; y++) for (let x = building.x; x < building.x + definition.width; x++) {
+      assert.equal(settled.cells[y * settled.size + x].terrain, 'grassland');
+    }
+  }
+  for (const terrain of ['forest_ground', 'farmland', 'mountain']) {
+    const cell = settled.cells.find(candidate => candidate.terrain === terrain);
+    const isolatedRoad = { ...settled, roads: [{ x: cell.x, y: cell.y + 1, z: cell.z }] };
+    assert.ok(validatePlacement(isolatedRoad, { type: 'house', x: cell.x, y: cell.y, rotation: 'north' }).reasons.includes('Requires grassland'));
+  }
 });
 test('projection preserves coordinates at different elevations', () => {
   for (const point of [{ x: 0, y: 0, z: 0 }, { x: 13.5, y: 90.5, z: 3 }, { x: -4, y: 10, z: 7 }]) {
