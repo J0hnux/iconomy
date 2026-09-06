@@ -1,3 +1,4 @@
+import { buildingFaces, buildingsByDepth } from "./buildings";
 import type { WorldPosition, WorldSnapshot } from "../../world/domain/world";
 export type Point = { x: number; y: number };
 export type Camera = { focus: Point; zoom: number };
@@ -79,8 +80,11 @@ export function containsPoint(point: Point, polygon: readonly Point[]) {
 // the owning surface cell, not a lower tile hidden beneath the cliff.
 export function pickCell(point: Point, camera: Camera, viewport: Viewport, world: WorldSnapshot) {
   const cells = orderedCells(world);
+  const buildings = buildingsByDepth(world);
   for (let index = cells.length - 1; index >= 0; index--) {
     const cell = cells[index];
+    const building = buildings.get(`${cell.x},${cell.y}`);
+    if (building && buildingFaces(building, camera, viewport).some(face => containsPoint(point, face.points))) return world.cells[building.y * world.size + building.x];
     const top = toScreen(cell, camera, viewport);
     if (Math.abs(point.x - top.x) > TILE_WIDTH * camera.zoom / 2 || point.y < top.y || point.y > top.y + (TILE_HEIGHT + cell.z * ELEVATION_HEIGHT) * camera.zoom) continue;
     if (terrainFaces(cell, world, camera, viewport).some(face => containsPoint(point, face.points))) return cell;
