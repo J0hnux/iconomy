@@ -84,3 +84,57 @@ test('nearby elevated terrain occludes a lower tile and shared sides are hidden'
   const plateau = { ...fixture, cells: cells.map(cell => ({ ...cell, z: 3 })) };
   assert.deepEqual(terrainFaces(plateau.cells[4], plateau, camera, viewport).map(face => face.kind), ['top']);
 });
+
+test('starting settlement has valid dry footprints and connected roads', () => {
+  const { withStartingSettlement, buildingDefinitions } = require('../world/domain/settlement.ts');
+  const settled = withStartingSettlement(world);
+  assert.ok(settled.settlement);
+  assert.equal(settled.settlement.population, 10);
+  assert.equal(settled.buildings.length, 6);
+  assert.deepEqual(withStartingSettlement(world), settled);
+  const occupied = new Set();
+  for (const building of settled.buildings) {
+    const definition = buildingDefinitions[building.type];
+    for (let y = building.y; y < building.y + definition.depth; y++) for (let x = building.x; x < building.x + definition.width; x++) {
+      const key = `${x},${y}`;
+      assert.ok(!occupied.has(key)); occupied.add(key);
+      const cell = settled.cells[y * settled.size + x];
+      assert.equal(cell.terrain, 'grassland'); assert.equal(cell.z, building.z);
+    }
+    assert.ok(settled.roads.some(road => road.x >= building.x - 1 && road.x <= building.x + definition.width && road.y >= building.y - 1 && road.y <= building.y + definition.depth));
+  }
+  const remaining = new Set(settled.roads.map(road => `${road.x},${road.y}`));
+  for (const key of remaining) assert.ok(!occupied.has(key));
+  const queue = [settled.roads[0]]; remaining.delete(`${queue[0].x},${queue[0].y}`);
+  while (queue.length) {
+    const cell = queue.pop();
+    for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+      const key = `${cell.x + dx},${cell.y + dy}`;
+      if (remaining.delete(key)) queue.push({ x: cell.x + dx, y: cell.y + dy });
+    }
+  }
+  assert.equal(remaining.size, 0);
+  assert.deepEqual(settled.cells, world.cells);
+});
+
+test('building roof and wall picking return the building origin after zoom', () => {
+  const { withStartingSettlement } = require('../world/domain/settlement.ts');
+  const { buildingFaces } = require('../presentation/world/buildings.ts');
+  const settled = withStartingSettlement(world);
+  for (const zoom of [0.5, 1, 3]) for (const building of settled.buildings) {
+    const camera = { focus: focusCell(building), zoom };
+    for (const face of buildingFaces(building, camera, viewport)) {
+      const center = face.points.reduce((sum, p) => ({ x: sum.x + p.x / 4, y: sum.y + p.y / 4 }), { x: 0, y: 0 });
+      assert.equal(pickCell(center, camera, viewport, settled), settled.cells[building.y * settled.size + building.x]);
+    }
+  }
+});
+
+test('no suitable site leaves terrain unchanged and omits the settlement', () => {
+  const { withStartingSettlement } = require('../world/domain/settlement.ts');
+  const tiny = generateWorld('tiny', 8);
+  const result = withStartingSettlement(tiny);
+  assert.equal(result.settlement, undefined);
+  assert.deepEqual(result.buildings, []);
+  assert.equal(result.cells, tiny.cells);
+});
