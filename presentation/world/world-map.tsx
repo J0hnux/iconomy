@@ -1,20 +1,38 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { buildingAt, buildingDefinitions } from "@/world/domain/settlement";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { constructibleBuildingTypes, validatePlacement, type PlacementRequest } from "@/world/domain/construction";
+import { buildingAt, buildingDefinitions, footprintOf, type BuildingRotation, type BuildingType } from "@/world/domain/settlement";
 import { chunkOf, type SurfaceCell, type WorldSnapshot } from "@/world/domain/world";
 import { toScreen, focusCell, panCamera, pickCell, zoomCamera, type Camera, type Viewport } from "./projection";
-import { drawWorld } from "./render";
+import { drawWorld, type PlacementPreview } from "./render";
 
 const button = "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-amber-200 disabled:opacity-30";
 
-export default function WorldMap({ world }: { world: WorldSnapshot }) {
+const rotations: readonly BuildingRotation[] = ["north", "east", "south", "west"];
+
+export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [world, setWorld] = useState(initialWorld);
   const [camera, setCamera] = useState<Camera>({ focus: world.settlement ? focusCell(world.settlement.anchor) : { x: world.size / 2, y: world.size / 2 }, zoom: world.settlement ? 2 : 1 });
   const [viewport, setViewport] = useState<Viewport>({ width: 1, height: 1 });
   const [selected, setSelected] = useState<SurfaceCell | null>(null);
   const [grid, setGrid] = useState(true);
+  const [tool, setTool] = useState<"inspect" | "build">("inspect");
+  const [buildingType, setBuildingType] = useState<BuildingType>("house");
+  const [rotation, setRotation] = useState<BuildingRotation>("north");
+  const [hovered, setHovered] = useState<SurfaceCell | null>(null);
+  const [revision, setRevision] = useState(0);
+  const [buildMessage, setBuildMessage] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const sessionId = useRef<string | null>(null);
   const drag = useRef<{ id: number; startX: number; startY: number; x: number; y: number; moved: boolean } | null>(null);
+
+  const placement = useMemo<PlacementPreview | null>(() => {
+    if (tool !== "build" || !hovered) return null;
+    const request: PlacementRequest = { type: buildingType, x: hovered.x, y: hovered.y, rotation };
+    return { request, validation: validatePlacement(world, request) };
+  }, [tool, hovered, buildingType, rotation, world]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -38,8 +56,8 @@ export default function WorldMap({ world }: { world: WorldSnapshot }) {
     canvas.width = Math.round(viewport.width * ratio);
     canvas.height = Math.round(viewport.height * ratio);
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    drawWorld(ctx, world, camera, viewport, selected, grid);
-  }, [world, camera, viewport, selected, grid]);
+    drawWorld(ctx, world, camera, viewport, selected, grid, placement);
+  }, [world, camera, viewport, selected, grid, placement]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -55,6 +73,42 @@ export default function WorldMap({ world }: { world: WorldSnapshot }) {
   }, [world.size]);
 
   const zoom = (factor: number) => setCamera(current => zoomCamera(current, factor, { x: viewport.width / 2, y: viewport.height / 2 }, viewport, world.size));
+  const rotatePreview = () => setRotation(current => rotations[(rotations.indexOf(current) + 1) % rotations.length]);
+  const confirmPlacement = async (candidate: SurfaceCell | null) => {
+    if (tool !== "build" || !candidate || submitting) return;
+    const request: PlacementRequest = { type: buildingType, x: candidate.x, y: candidate.y, rotation };
+    const validation = validatePlacement(world, request);
+    if (!validation.valid) {
+      setBuildMessage(validation.reasons.join(". "));
+      return;
+    }
+    setSubmitting(true);
+    setBuildMessage("Submitting construction command…");
+    sessionId.current ??= crypto.randomUUID();
+    try {
+      const response = await fetch("/api/construction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sessionId.current, expectedRevision: revision, placement: request }),
+      });
+      const result = await response.json() as { building?: NonNullable<WorldSnapshot["buildings"]>[number]; buildings?: WorldSnapshot["buildings"]; revision?: number; error?: string };
+      if (!response.ok || !result.building || typeof result.revision !== "number") {
+        if (typeof result.revision === "number") setRevision(result.revision);
+        if (result.buildings) setWorld(current => ({ ...current, buildings: result.buildings }));
+        setBuildMessage(result.error ?? "The server rejected this placement.");
+        return;
+      }
+      setWorld(current => ({ ...current, buildings: [...(current.buildings ?? []), result.building!] }));
+      setRevision(result.revision);
+      setSelected(world.cells[result.building.y * world.size + result.building.x]);
+      setHovered(null);
+      setBuildMessage(`${buildingDefinitions[result.building.type].name} constructed.`);
+    } catch {
+      setBuildMessage("Construction server is unavailable. Try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
   const selectedBuilding = selected ? buildingAt(world, selected.x, selected.y) : undefined;
   const cityLabel = world.settlement ? toScreen({ ...world.settlement.anchor, z: world.settlement.anchor.z + 4 }, camera, viewport) : null;
   const chunk = selected ? chunkOf(selected, world.chunkSize) : null;
@@ -62,12 +116,12 @@ export default function WorldMap({ world }: { world: WorldSnapshot }) {
   return (
     <main className="flex h-dvh min-h-[520px] flex-col overflow-hidden bg-[#101f25] font-sans text-slate-100">
       <header className="z-10 flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#101d23] px-5 py-4 sm:px-7">
-        <div className="flex items-center gap-3"><span className="flex size-9 items-center justify-center rounded-lg border border-amber-200/30 text-xl text-amber-200" aria-hidden="true">◇</span><div><h1 className="text-lg font-semibold tracking-tight">OpenWorld Economy</h1><p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Spatial prototype / Milestone 3</p></div></div>
-        <span className="rounded-full border border-emerald-300/20 bg-emerald-300/5 px-3 py-1.5 text-xs text-emerald-200">World explorer</span>
+        <div className="flex items-center gap-3"><span className="flex size-9 items-center justify-center rounded-lg border border-amber-200/30 text-xl text-amber-200" aria-hidden="true">◇</span><div><h1 className="text-lg font-semibold tracking-tight">OpenWorld Economy</h1><p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Spatial prototype / Milestone 4</p></div></div>
+        <span className="rounded-full border border-emerald-300/20 bg-emerald-300/5 px-3 py-1.5 text-xs text-emerald-200">{tool === "build" ? "Build tool active" : "Inspect tool"}</span>
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
         <section className="relative min-h-[260px] flex-1 overflow-hidden" aria-label="Isometric world">
-          <canvas ref={canvasRef} tabIndex={0} aria-label="Interactive isometric map. Drag or use WASD and arrow keys to pan. Scroll or use plus and minus to zoom. Enter selects the center tile. Escape clears selection."
+          <canvas ref={canvasRef} tabIndex={0} aria-label="Interactive isometric map. Drag or use WASD and arrow keys to pan. Scroll or use plus and minus to zoom. Enter inspects or builds at the center. R rotates a build preview. Escape cancels the build tool."
             className="absolute inset-0 h-full w-full touch-none cursor-grab outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-amber-200 active:cursor-grabbing"
             onPointerDown={event => {
               if (!event.isPrimary || event.button !== 0) return;
@@ -76,6 +130,10 @@ export default function WorldMap({ world }: { world: WorldSnapshot }) {
               drag.current = { id: event.pointerId, startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY, moved: false };
             }}
             onPointerMove={event => {
+              if (tool === "build") {
+                const bounds = event.currentTarget.getBoundingClientRect();
+                setHovered(pickCell({ x: event.clientX - bounds.left, y: event.clientY - bounds.top }, camera, viewport, world));
+              }
               const state = drag.current;
               if (!state || state.id !== event.pointerId) return;
               if (!state.moved && Math.hypot(event.clientX - state.startX, event.clientY - state.startY) < 5) return;
@@ -89,7 +147,9 @@ export default function WorldMap({ world }: { world: WorldSnapshot }) {
               if (!state || state.id !== event.pointerId) return;
               if (!state.moved) {
                 const bounds = event.currentTarget.getBoundingClientRect();
-                setSelected(pickCell({ x: event.clientX - bounds.left, y: event.clientY - bounds.top }, camera, viewport, world));
+                const candidate = pickCell({ x: event.clientX - bounds.left, y: event.clientY - bounds.top }, camera, viewport, world);
+                if (tool === "build") void confirmPlacement(candidate);
+                else setSelected(candidate);
               }
               drag.current = null;
               event.currentTarget.releasePointerCapture(event.pointerId);
@@ -101,10 +161,14 @@ export default function WorldMap({ world }: { world: WorldSnapshot }) {
               if (event.ctrlKey || event.metaKey || event.altKey) return;
               const movement: Record<string, { x: number; y: number }> = { arrowup: { x: 0, y: 40 }, w: { x: 0, y: 40 }, arrowdown: { x: 0, y: -40 }, s: { x: 0, y: -40 }, arrowleft: { x: 40, y: 0 }, a: { x: 40, y: 0 }, arrowright: { x: -40, y: 0 }, d: { x: -40, y: 0 } };
               if (movement[key]) { event.preventDefault(); setCamera(current => panCamera(current, movement[key], world.size)); }
-              if (["+", "=", "-", "enter", "escape"].includes(key)) {
+              if (["+", "=", "-", "enter", "escape", "r"].includes(key)) {
                 event.preventDefault();
-                if (key === "enter") setSelected(pickCell({ x: viewport.width / 2, y: viewport.height / 2 }, camera, viewport, world));
-                else if (key === "escape") setSelected(null);
+                if (key === "enter") {
+                  const candidate = pickCell({ x: viewport.width / 2, y: viewport.height / 2 }, camera, viewport, world);
+                  if (tool === "build") void confirmPlacement(candidate); else setSelected(candidate);
+                }
+                else if (key === "escape") { setTool("inspect"); setHovered(null); setBuildMessage(null); }
+                else if (key === "r") rotatePreview();
                 else zoom(key === "-" ? 1 / 1.2 : 1.2);
               }
             }}
@@ -130,19 +194,34 @@ export default function WorldMap({ world }: { world: WorldSnapshot }) {
             <p className="text-[10px] uppercase tracking-[0.2em] text-amber-200">Starting settlement</p>
             <h2 className="mt-2 text-xl font-semibold">{world.settlement.name}</h2>
             <p className="mt-2 text-sm text-slate-300">Population: {world.settlement.population} citizens</p>
-            <p className="mt-1 text-xs text-slate-400">{world.buildings?.filter(building => building.type === "camp").length} camp · {world.buildings?.filter(building => building.type === "house").length} houses · {world.buildings?.filter(building => building.type === "warehouse").length} warehouse</p>
+            <p className="mt-1 text-xs text-slate-400">{world.buildings?.filter(building => building.type === "camp").length} camp · {world.buildings?.filter(building => building.type === "house").length} houses · {world.buildings?.filter(building => building.type === "warehouse").length} warehouse · {world.buildings?.filter(building => building.type === "workshop").length} workshops</p>
             <button className={`${button} mt-3 w-full`} onClick={() => setCamera(current => ({ ...current, focus: focusCell(world.settlement!.anchor), zoom: 2 }))}>Go to settlement</button>
           </section>}
+          <section className="mb-6 border-b border-white/10 pb-5" aria-label="Construction tools">
+            <div className="flex items-center justify-between gap-3">
+              <div><p className="text-[10px] uppercase tracking-[0.2em] text-amber-200">World tool</p><h2 className="mt-1 text-lg font-semibold">{tool === "build" ? "Place building" : "Inspect"}</h2></div>
+              <button className={button} onClick={() => { setTool(current => current === "build" ? "inspect" : "build"); setHovered(null); setBuildMessage(null); }}>{tool === "build" ? "Cancel" : "Build"}</button>
+            </div>
+            {tool === "build" && <div className="mt-4 space-y-3">
+              <div className="grid grid-cols-3 gap-2">{constructibleBuildingTypes.map(type => <button key={type} className={`${button} px-2 ${buildingType === type ? "border-amber-200/60 bg-amber-200/10 text-amber-100" : ""}`} onClick={() => { setBuildingType(type); setBuildMessage(null); }}>{buildingDefinitions[type].name}</button>)}</div>
+              <div className="flex items-center justify-between gap-3"><span className="text-xs text-slate-400">Rotation: <span className="capitalize text-slate-200">{rotation}</span></span><button className={button} onClick={rotatePreview}>Rotate (R)</button></div>
+              <p className="text-xs leading-5 text-slate-400">Move over the map for a footprint preview, then click to construct. Buildings require level grassland beside a road.</p>
+              {placement && <div className={`rounded-lg border p-3 text-xs ${placement.validation.valid ? "border-emerald-300/30 bg-emerald-300/5 text-emerald-200" : "border-red-300/30 bg-red-300/5 text-red-200"}`} aria-live="polite">
+                {placement.validation.valid ? "Valid placement — click to build" : placement.validation.reasons.join(" · ")}
+              </div>}
+              {buildMessage && <p className="text-xs text-amber-100" aria-live="polite">{buildMessage}</p>}
+            </div>}
+          </section>
           <p className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Selected location</p>
           <h2 className="mt-2 text-xl font-medium">{selectedBuilding ? buildingDefinitions[selectedBuilding.type].name : selected ? (selected.terrain === "water" ? "Water" : selected.terrain === "mountain" ? "Mountain" : selected.z > 1 ? "Hillside" : "Grassland") : "Explore the world"}</h2>
-          {selectedBuilding && <p className="mt-2 text-xs leading-5 text-slate-400">{buildingDefinitions[selectedBuilding.type].purpose} Footprint: {buildingDefinitions[selectedBuilding.type].width} × {buildingDefinitions[selectedBuilding.type].depth}. Settlement: {world.settlement?.name}.</p>}
+          {selectedBuilding && <p className="mt-2 text-xs leading-5 text-slate-400">{buildingDefinitions[selectedBuilding.type].purpose} Footprint: {footprintOf(selectedBuilding.type, selectedBuilding.rotation).width} × {footprintOf(selectedBuilding.type, selectedBuilding.rotation).depth}. Rotation: {selectedBuilding.rotation}. Settlement: {world.settlement?.name}.</p>}
           <div className="mt-5" aria-live="polite" aria-atomic="true">
             {selected ? <><div className="grid grid-cols-3 gap-2">{(["x", "y", "z"] as const).map(axis => <div key={axis} className="rounded-lg border border-white/10 bg-black/10 p-3"><p className="text-xs uppercase text-slate-400">{axis}</p><p className="mt-1 font-mono text-xl text-amber-100">{selected[axis]}</p></div>)}</div><p className="mt-4 text-xs text-slate-400">Chunk {chunk?.x}, {chunk?.y} · Surface elevation {selected.z}</p></> : <p className="text-sm leading-6 text-slate-400">Select a diamond to inspect its world coordinates. Follow the river, find the coastline, or explore the stepped hills and mountains.</p>}
           </div>
           <button className={`${button} mt-5 w-full`} disabled={!selected} onClick={() => { if (selected) setCamera(current => ({ ...current, focus: focusCell(selected) })); }}>Focus selected tile</button>
           <div className="mt-7 border-t border-white/10 pt-5"><h3 className="text-xs font-medium text-slate-300">Map layers</h3><label className="mt-4 flex cursor-pointer items-center justify-between text-sm text-slate-400">Tile grid<input type="checkbox" checked={grid} onChange={event => setGrid(event.target.checked)} className="size-4 accent-amber-200" /></label><div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-400"><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#718e6c]" />Grassland</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#2c7187]" />Water</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#92988f]" />Mountain</span></div></div>
           <div className="mt-7 border-t border-white/10 pt-5 text-xs leading-6 text-slate-400"><h3 className="mb-2 font-medium text-slate-300">Navigation</h3><p>Drag to pan · Scroll to zoom</p><p>WASD / arrows to pan when map is focused</p><p>Enter to inspect the center · Esc to clear</p></div>
-          <p className="mt-7 text-[11px] leading-5 text-slate-500">The founding settlement is read-only. Construction, inventory, and population simulation arrive in later milestones.</p>
+          <p className="mt-7 text-[11px] leading-5 text-slate-500">Construction is authoritative for this running server session. Inventory, costs, persistence, authentication, and population simulation arrive later.</p>
         </aside>
       </div>
       <footer className="flex flex-wrap justify-between gap-2 border-t border-white/10 bg-[#101d23] px-5 py-2.5 font-mono text-[10px] text-slate-400"><span>SEED / {world.seed}</span><span>{world.cells.length.toLocaleString("en-US")} CELLS · {world.chunkSize} × {world.chunkSize}-CELL CHUNKS</span><span>2:1 ISOMETRIC / CANVAS</span></footer>

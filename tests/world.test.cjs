@@ -138,3 +138,55 @@ test('no suitable site leaves terrain unchanged and omits the settlement', () =>
   assert.deepEqual(result.buildings, []);
   assert.equal(result.cells, tiny.cells);
 });
+
+test('placement validation handles rotation, access, terrain, slopes, and occupancy', () => {
+  const { withStartingSettlement, footprintOf } = require('../world/domain/settlement.ts');
+  const { validatePlacement, placeBuilding } = require('../world/domain/construction.ts');
+  const settled = withStartingSettlement(world);
+  assert.deepEqual(footprintOf('workshop', 'north'), { width: 2, depth: 1 });
+  assert.deepEqual(footprintOf('workshop', 'east'), { width: 1, depth: 2 });
+  const road = settled.roads.find(road => {
+    const request = { type: 'house', x: road.x + 1, y: road.y, rotation: 'north' };
+    return validatePlacement(settled, request).valid;
+  });
+  assert.ok(road, 'fixture needs a valid road-adjacent site');
+  const valid = { type: 'house', x: road.x + 1, y: road.y, rotation: 'north' };
+  assert.equal(validatePlacement(settled, valid).valid, true);
+  const placed = placeBuilding(settled, valid, 'test-building');
+  assert.equal(placed.buildings.at(-1).id, 'test-building');
+  assert.ok(validatePlacement(placed, valid).reasons.includes('Footprint is occupied'));
+  const onRoad = { ...valid, x: road.x, y: road.y };
+  assert.ok(validatePlacement(settled, onRoad).reasons.includes('Cannot build over a road'));
+  assert.ok(validatePlacement(settled, { ...valid, x: -1 }).reasons.includes('Footprint extends beyond the world'));
+  const waterCell = settled.cells.find(cell => cell.terrain === 'water');
+  assert.ok(validatePlacement(settled, { ...valid, x: waterCell.x, y: waterCell.y }).reasons.includes('Requires grassland'));
+  const isolated = settled.cells.find(cell => cell.terrain === 'grassland' && !validatePlacement(settled, { ...valid, x: cell.x, y: cell.y }).reasons.includes('Requires adjacent road access'));
+  assert.ok(isolated);
+  const noRoadWorld = { ...settled, roads: [] };
+  assert.ok(validatePlacement(noRoadWorld, valid).reasons.includes('Requires adjacent road access'));
+  const slopeOrigin = settled.cells.find(cell => cell.x + 1 < settled.size && cell.terrain === 'grassland' && settled.cells[cell.y * settled.size + cell.x + 1].terrain === 'grassland' && settled.cells[cell.y * settled.size + cell.x + 1].z !== cell.z);
+  assert.ok(slopeOrigin, 'fixture needs two neighboring grass cells at different heights');
+  const slopeWorld = { ...settled, roads: [{ x: slopeOrigin.x, y: slopeOrigin.y + 1, z: slopeOrigin.z }] };
+  assert.ok(validatePlacement(slopeWorld, { type: 'workshop', x: slopeOrigin.x, y: slopeOrigin.y, rotation: 'north' }).reasons.includes('Requires level ground'));
+  assert.deepEqual(validatePlacement(settled, { ...valid, rotation: 'upside-down' }).reasons, ['Rotation is unavailable']);
+});
+
+test('server construction sessions enforce revision and authoritative validation', () => {
+  const { clearConstructionSessionsForTests, constructForSession } = require('../world/server/construction-store.ts');
+  const { withStartingSettlement } = require('../world/domain/settlement.ts');
+  const { validatePlacement } = require('../world/domain/construction.ts');
+  clearConstructionSessionsForTests();
+  const settled = withStartingSettlement(world);
+  const road = settled.roads.find(road => validatePlacement(settled, { type: 'house', x: road.x + 1, y: road.y, rotation: 'north' }).valid);
+  const placement = { type: 'house', x: road.x + 1, y: road.y, rotation: 'north' };
+  const accepted = constructForSession('test-session', 0, placement);
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.revision, 1);
+  assert.equal(accepted.building.id, 'player-1');
+  const stale = constructForSession('test-session', 0, { ...placement, x: placement.x + 1 });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.revision, 1);
+  assert.ok(stale.buildings.some(building => building.id === 'player-1'));
+  const invalid = constructForSession('second-session', 0, { ...placement, x: -5 });
+  assert.equal(invalid.status, 422);
+});

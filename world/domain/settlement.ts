@@ -4,14 +4,24 @@ export const buildingDefinitions = {
   camp: { name: "Settler Camp", width: 2, depth: 2, purpose: "Administrative anchor for the starting settlement." },
   house: { name: "House", width: 1, depth: 1, purpose: "Housing for the founding citizens." },
   warehouse: { name: "Warehouse", width: 2, depth: 2, purpose: "Local storage site. Inventory and production arrive later." },
+  workshop: { name: "Workshop", width: 2, depth: 1, purpose: "A small production site. Recipes and workers arrive later." },
 } as const;
-export type Building = WorldPosition & Readonly<{ id: string; type: keyof typeof buildingDefinitions; settlementId: string; rotation: "north" }>;
+export type BuildingType = keyof typeof buildingDefinitions;
+export type BuildingRotation = "north" | "east" | "south" | "west";
+export type Building = WorldPosition & Readonly<{ id: string; type: BuildingType; settlementId: string; rotation: BuildingRotation }>;
 export type Settlement = Readonly<{ id: string; name: string; population: number; anchor: WorldPosition }>;
+
+export function footprintOf(type: BuildingType, rotation: BuildingRotation) {
+  const definition = buildingDefinitions[type];
+  return rotation === "east" || rotation === "west"
+    ? { width: definition.depth, depth: definition.width }
+    : { width: definition.width, depth: definition.depth };
+}
 
 export function buildingAt(world: WorldSnapshot, x: number, y: number) {
   return world.buildings?.find(building => {
-    const definition = buildingDefinitions[building.type];
-    return x >= building.x && x < building.x + definition.width && y >= building.y && y < building.y + definition.depth;
+    const footprint = footprintOf(building.type, building.rotation);
+    return x >= building.x && x < building.x + footprint.width && y >= building.y && y < building.y + footprint.depth;
   });
 }
 

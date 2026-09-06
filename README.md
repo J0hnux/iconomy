@@ -39,6 +39,18 @@ The world remains a surface height field, not a collection of individual voxels.
 
 Ten automated tests include footprint validity, unchanged terrain, road connectivity, deterministic settlement placement, safe handling of unavailable sites, and roof/wall picking across zoom levels. Browser checks cover warehouse inspection, panning, and zooming with a selected building.
 
+## Milestone 4: build interaction
+
+- The explicit world tool switches between Inspect and Build. Escape cancels Build mode.
+- House (1×1), Warehouse (2×2), and Workshop (2×1) are constructible. Workshop rotation demonstrates footprint changes; use the Rotate button or `R` for north/east/south/west quarter turns.
+- Moving over the map shows a transparent green or red footprint. The panel explains invalid placement before submission.
+- Placement requires in-bounds, level grassland beside an existing road. Buildings cannot overlap structures or roads.
+- Clicking a valid preview sends a construction command to `POST /api/construction`. The route regenerates the authoritative starting world, repeats all validation, checks the expected revision, assigns the building ID, and returns the accepted building.
+- The client renders a building only after that response. A revision conflict restores the server's current building list.
+- Prototype construction sessions live in server-process memory and reset when the server restarts. Costs, inventory, persistent storage, authenticated ownership, and multiplayer synchronization remain future work. When authentication is introduced, it must use NextAuth.
+
+`world/domain/construction.ts` owns footprint validation and placement. `world/server/construction-store.ts` owns prototype session revisions, while `app/api/construction/route.ts` is the command boundary. The same pure validator powers the responsive client preview, but the server result remains authoritative.
+
 ## Run and verify
 
 ```bash
@@ -49,7 +61,9 @@ npm test
 npm run build
 ```
 
-Open http://localhost:3000. Drag the map, zoom at a river tile, select it, and verify selection remains attached when panning, zooming, or resizing. Dragging must not select a new tile. Click outside the world to clear selection. Check keyboard controls and focus-selected behavior. Select a mountain tile and confirm z is greater than zero; click an exposed cliff and verify its owning tile is selected. Focus the tile and confirm its elevated surface is centered, then pan/zoom and verify the selection stays attached.
+Open http://localhost:3000. Drag the map, zoom at a river tile, select it, and verify selection remains attached when panning, zooming, or resizing. Dragging must not select a new tile. Check keyboard controls and focus-selected behavior. Select a mountain tile and confirm z is greater than zero; click an exposed cliff and verify its owning tile is selected.
+
+For construction, choose Build, select a building, and move beside a road. Confirm valid cells turn green and invalid cells turn red with a reason. Rotate the Workshop and verify its footprint changes between 2×1 and 1×2. Click a valid preview and verify the building count increases only after the server accepts it. Try the same footprint again and verify it is rejected as occupied.
 
 ## Architecture and scope
 
@@ -57,6 +71,6 @@ Open http://localhost:3000. Drag the map, zoom at a river tile, select it, and v
 
 `presentation/world/projection.ts` owns coordinate transforms, bounded camera operations, and elevated terrain face picking. `render.ts` maps semantic terrain to shaded Canvas top and cliff polygons. `world-map.tsx` owns presentation-only camera, selection, and UI state. Rendering runs when those inputs change rather than in a perpetual simulation loop.
 
-The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry and depth ordering remain presentation responsibilities. Picking scans cells in reverse painter order with a bounds check; chunk-level acceleration is deferred until profiling justifies it. This milestone does not implement economic mutations, persistence, multiplayer, or authentication; future authentication must use NextAuth and future economic commands must be validated by the server. No browser state here represents authoritative money, production, or ownership.
+The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry and depth ordering remain presentation responsibilities. Picking scans cells in reverse painter order with a bounds check; chunk-level acceleration is deferred until profiling justifies it. Construction now crosses a server validation boundary, while persistence, multiplayer, authentication, money, production, and ownership remain unimplemented.
 
 The blueprint and reference image describe the long-term destination, not the current art target.

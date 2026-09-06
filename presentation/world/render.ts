@@ -1,4 +1,5 @@
 import { buildingAt } from "../../world/domain/settlement";
+import type { PlacementRequest, PlacementValidation } from "../../world/domain/construction";
 import { buildingFaces, buildingsByDepth, buildingVisuals } from "./buildings";
 import type { SurfaceCell, WorldSnapshot } from "../../world/domain/world";
 import { orderedCells, terrainFaces, toScreen, TILE_WIDTH, TILE_HEIGHT, ELEVATION_HEIGHT, type Camera, type Viewport } from "./projection";
@@ -7,11 +8,14 @@ const grass = ["#668568", "#6c8b6d", "#718e6c", "#68866a", "#748f70"];
 const water = ["#28667d", "#2b6d83", "#2c7187", "#306d82", "#296a81"];
 const rock = ["#89918b", "#92988f", "#838d88", "#9ba098", "#8e9791"];
 
-export function drawWorld(ctx: CanvasRenderingContext2D, world: WorldSnapshot, camera: Camera, viewport: Viewport, selected: SurfaceCell | null, grid: boolean) {
+export type PlacementPreview = Readonly<{ request: PlacementRequest; validation: PlacementValidation }>;
+
+export function drawWorld(ctx: CanvasRenderingContext2D, world: WorldSnapshot, camera: Camera, viewport: Viewport, selected: SurfaceCell | null, grid: boolean, preview: PlacementPreview | null = null) {
   ctx.clearRect(0, 0, viewport.width, viewport.height);
   const buildings = buildingsByDepth(world);
   const roads = new Set((world.roads ?? []).map(road => `${road.x},${road.y}`));
   const selectedBuilding = selected ? buildingAt(world, selected.x, selected.y) : undefined;
+  const previewCells = new Set(preview?.validation.cells.map(cell => `${cell.x},${cell.y}`) ?? []);
   for (const cell of orderedCells(world)) {
     const p = toScreen(cell, camera, viewport);
     const building = buildings.get(`${cell.x},${cell.y}`);
@@ -41,6 +45,13 @@ export function drawWorld(ctx: CanvasRenderingContext2D, world: WorldSnapshot, c
         ctx.lineCap = "butt";
         // Restore the terrain path before drawing the selection overlay.
         ctx.beginPath(); face.points.forEach((point, index) => index === 0 ? ctx.moveTo(point.x, point.y) : ctx.lineTo(point.x, point.y)); ctx.closePath();
+      }
+      if (face.kind === "top" && previewCells.has(`${cell.x},${cell.y}`)) {
+        ctx.fillStyle = preview?.validation.valid ? "#42d87880" : "#ef5b5b80";
+        ctx.fill();
+        ctx.strokeStyle = preview?.validation.valid ? "#8dffb0" : "#ff9b9b";
+        ctx.lineWidth = 2;
+        ctx.stroke();
       }
       // Selection is drawn with its cell so nearer terrain correctly occludes it.
       if (selected?.x === cell.x && selected.y === cell.y) {
