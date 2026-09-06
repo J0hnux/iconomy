@@ -307,3 +307,47 @@ test('logistics routes connect each producer to the settlement road network', ()
   }
   assert.deepEqual(withStartingLogistics(withStartingProduction(settled)), routed);
 });
+
+test('market listings expose price trends, shortages, and actionable opportunities', () => {
+  const { buildEconomicOpportunities, buildMarketListings, marketPriceCents, shortageLevel } = require('../world/domain/market.ts');
+  const inventory = { food: 12, wood: 3, stone: 0 };
+  const histories = {
+    food: [{ time: 0, priceCents: 620 }, { time: 5_000, priceCents: 600 }],
+    wood: [{ time: 0, priceCents: 1_100 }, { time: 5_000, priceCents: 1_250 }],
+    stone: [{ time: 0, priceCents: 1_600 }, { time: 5_000, priceCents: 1_850 }],
+  };
+  const listings = buildMarketListings(inventory, histories, 1);
+  assert.equal(listings.find(listing => listing.commodity === 'food').shortage, 'none');
+  assert.equal(listings.find(listing => listing.commodity === 'wood').shortage, 'critical');
+  assert.equal(listings.find(listing => listing.commodity === 'stone').trendPercent, 15.6);
+  assert.equal(shortageLevel('stone', 0), 'critical');
+  assert.ok(marketPriceCents('stone', 0, 1) > marketPriceCents('stone', 8, 1));
+  const sites = [
+    { type: 'lumber_camp', name: 'Lumber Camp', buildingId: 'lumber', status: 'missing_workers', requiredWorkers: 2, assignedWorkers: 0 },
+    { type: 'quarry', name: 'Quarry', buildingId: 'quarry', status: 'storage_full', requiredWorkers: 3, assignedWorkers: 3, stored: 12 },
+  ];
+  const opportunities = buildEconomicOpportunities(listings, sites);
+  assert.equal(opportunities[0].targetBuildingId, 'lumber');
+  assert.match(opportunities[0].reason, /critically short/);
+  assert.ok(opportunities.some(opportunity => opportunity.id === 'stone-dispatch'));
+});
+
+test('market sales remove warehouse goods, credit cash, and create events', () => {
+  const { clearProductionSessionsForTests, productionForSession, sellWarehouseGoods } = require('../world/server/production-store.ts');
+  clearProductionSessionsForTests();
+  const initial = productionForSession('market-session', 1_000);
+  const food = initial.market.listings.find(listing => listing.commodity === 'food');
+  assert.equal(initial.market.cashCents, 12_450_00);
+  assert.equal(initial.market.opportunities[0].commodity, 'wood');
+  const sale = sellWarehouseGoods('market-session', 'food', 2, food.priceCents, 1_500);
+  assert.equal(sale.ok, true);
+  assert.equal(sale.revenueCents, food.priceCents * 2);
+  assert.equal(sale.snapshot.logistics.warehouseInventory.food, 6);
+  assert.equal(sale.snapshot.market.cashCents, initial.market.cashCents + sale.revenueCents);
+  assert.match(sale.snapshot.market.events[0].message, /Sold 2 food/);
+  assert.equal(sellWarehouseGoods('market-session', 'stone', 1, sale.snapshot.market.listings.find(listing => listing.commodity === 'stone').priceCents, 2_000).status, 422);
+  assert.equal(sellWarehouseGoods('market-session', 'food', 0, sale.snapshot.market.listings.find(listing => listing.commodity === 'food').priceCents, 2_000).status, 400);
+  const staleQuote = sellWarehouseGoods('market-session', 'food', 1, food.priceCents, 2_000);
+  assert.equal(staleQuote.status, 409);
+  assert.ok(staleQuote.snapshot);
+});

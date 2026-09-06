@@ -87,6 +87,18 @@ The automated tests include footprint validity, unchanged terrain, road connecti
 
 `world/domain/logistics.ts` owns road connections, deterministic route generation, shipment types, and route interpolation. The production session store owns shipment departures, authoritative arrivals, and warehouse inventory transitions. Canvas animation consumes those snapshots without changing them.
 
+## Milestone 7: market and opportunities
+
+- The Market view keeps the isometric world visible while showing Novagrad's food, wood, and stone exchange. Each listing includes the current warehouse supply, desired stock, price, recent sparkline, percentage trend, and Stable, Low shortage, or Critical shortage indicator.
+- Prices update on authoritative five-second market ticks. Each commodity starts from a base price and responds to actual warehouse scarcity plus a small deterministic demand pulse; Canvas frames never update prices.
+- Sell 1 and Sell all issue server commands. A completed sale removes goods from Novagrad Warehouse at the quoted price and credits company cash, so market actions preserve the spatial inventory model.
+- Economic opportunities combine market shortages with real producer state. Examples direct the player to staff the idle Lumber Camp, dispatch full Quarry storage, or inspect a running producer whose commodity remains scarce.
+- Opportunity actions return to the map and focus the relevant physical producer, where the existing worker and dispatch controls complete the production decision.
+- The event log explains market, production, and logistics changes, including shortages, price moves, staffing changes, shipment departures and arrivals, and completed sales.
+- Market cash, price history, and events remain in server-process memory. Consumer orders, competing companies, order books, operating costs, persistence, and authenticated ownership remain future work.
+
+`world/domain/market.ts` owns price formation, shortage classification, listing read models, and opportunity derivation. The production session store advances market ticks and validates warehouse sales alongside production and logistics state.
+
 ## Run and verify
 
 ```bash
@@ -105,12 +117,14 @@ For production, open each site from the Production panel. Confirm the Farm advan
 
 For logistics, watch the initial food marker travel along Harvest Road and confirm the logistics panel changes it from In transit to Arrived. Dispatch the Quarry's stone, verify its local storage clears while warehouse stone remains unchanged, then confirm the warehouse gains 12 stone only after the Ridge Road arrival. Select the Warehouse to inspect its spatial inventory.
 
+For the market, choose Market in the top navigation. Compare each price trend and shortage indicator with warehouse stock. Follow the Staff Lumber Camp opportunity and assign two workers, then dispatch its first wood batch. After it arrives, return to Market and verify wood supply and pricing respond. Sell one delivered good and confirm both warehouse stock and cash change while the sale appears in the event log.
+
 ## Architecture and scope
 
 `world/domain/world.ts` generates a serializable, read-only semantic snapshot on the server page. Logical cells never contain screen positions or renderer objects. Chunks are currently derived addresses, not streamed storage.
 
 `presentation/world/projection.ts` owns coordinate transforms, bounded camera operations, and elevated terrain face picking. `render.ts` maps semantic terrain to shaded Canvas top and cliff polygons. `world-map.tsx` owns presentation-only camera, selection, and UI state. Rendering runs when those inputs change rather than in a perpetual simulation loop.
 
-The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry and depth ordering remain presentation responsibilities. Picking scans cells in reverse painter order with a bounds check; chunk-level acceleration is deferred until profiling justifies it. Construction, production, shipments, and warehouse arrivals cross server validation boundaries, while persistence, multiplayer, authentication, money, markets, and ownership remain unimplemented.
+The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry and depth ordering remain presentation responsibilities. Picking scans cells in reverse painter order with a bounds check; chunk-level acceleration is deferred until profiling justifies it. Construction, production, shipments, warehouse arrivals, market ticks, and sales cross server validation boundaries, while persistence, multiplayer, authentication, competing companies, and ownership remain unimplemented.
 
 The blueprint and reference image describe the long-term destination, not the current art target.

@@ -1,6 +1,7 @@
 import { buildingAt, footprintOf, type Building, type BuildingType } from "./settlement";
 import type { SurfaceCell, WorldPosition, WorldSnapshot } from "./world";
 import type { LogisticsSnapshot } from "./logistics";
+import type { MarketSnapshot } from "./market";
 
 export const producerTypes = ["farm", "lumber_camp", "quarry"] as const satisfies readonly BuildingType[];
 export type ProducerType = typeof producerTypes[number];
@@ -46,6 +47,7 @@ export type ProductionSnapshot = Readonly<{
   availableWorkers: number;
   sites: readonly ProductionSite[];
   logistics: LogisticsSnapshot;
+  market: MarketSnapshot;
 }>;
 
 export function isProducerType(type: BuildingType): type is ProducerType {
