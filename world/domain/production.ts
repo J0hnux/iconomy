@@ -8,6 +8,13 @@ import type { SurfaceCell, WorldPosition, WorldSnapshot } from "./world";
 import type { LogisticsSnapshot } from "./logistics";
 import type { MarketSnapshot } from "./market";
 import type { PopulationSnapshot } from "./population";
+import {
+  advanceLaborWork,
+  laborEfficiency,
+  laborStatus,
+  type LaborSnapshot,
+  type LaborStatus,
+} from "./labor";
 
 export const producerTypes = [
   "farm",
@@ -56,6 +63,7 @@ export type ProductionState = Readonly<{
   assignedWorkers: number;
   stored: number;
   progressMs: number;
+  laborRemainder?: number;
   updatedAt: number;
 }>;
 
@@ -70,11 +78,14 @@ export type ProductionSite = ProductionState &
     storageCapacity: number;
     status: ProductionStatus;
     statusReason: string;
+    laborEfficiency: number;
+    laborStatus: LaborStatus;
   }>;
 
 export type ProductionSnapshot = Readonly<{
   simulationTime: number;
   population: PopulationSnapshot;
+  labor: LaborSnapshot;
   sites: readonly ProductionSite[];
   logistics: LogisticsSnapshot;
   market: MarketSnapshot;
@@ -101,9 +112,18 @@ export function advanceProduction(
 ): ProductionState {
   const recipe = productionRecipes[type];
   const elapsed = Math.max(0, now - state.updatedAt);
-  if (productionStatus(state, type) !== "running")
+  if (
+    state.stored >= recipe.storageCapacity ||
+    laborEfficiency(state.assignedWorkers, recipe.requiredWorkers) === 0
+  )
     return { ...state, updatedAt: now };
-  const totalProgress = state.progressMs + elapsed;
+  const laborWork = advanceLaborWork(
+    elapsed,
+    state.assignedWorkers,
+    recipe.requiredWorkers,
+    state.laborRemainder ?? 0,
+  );
+  const totalProgress = state.progressMs + laborWork.effectiveMs;
   const completedCycles = Math.floor(totalProgress / recipe.cycleMs);
   const cyclesWithRoom = Math.floor(
     (recipe.storageCapacity - state.stored) / recipe.outputAmount,
@@ -114,7 +134,13 @@ export function advanceProduction(
     stored >= recipe.storageCapacity
       ? 0
       : totalProgress - acceptedCycles * recipe.cycleMs;
-  return { ...state, stored, progressMs, updatedAt: now };
+  return {
+    ...state,
+    stored,
+    progressMs,
+    laborRemainder: stored >= recipe.storageCapacity ? 0 : laborWork.remainder,
+    updatedAt: now,
+  };
 }
 
 export function describeProduction(
@@ -124,12 +150,22 @@ export function describeProduction(
   if (!isProducerType(building.type)) return null;
   const recipe = productionRecipes[building.type];
   const status = productionStatus(state, building.type);
+  const efficiency = laborEfficiency(
+    state.assignedWorkers,
+    recipe.requiredWorkers,
+  );
+  const staffing = laborStatus(
+    state.assignedWorkers,
+    recipe.requiredWorkers,
+  );
   const statusReason =
-    status === "running"
-      ? `Producing ${recipe.output} every ${recipe.cycleMs / 1000} seconds.`
-      : status === "missing_workers"
-        ? `Needs ${recipe.requiredWorkers - state.assignedWorkers} more worker${recipe.requiredWorkers - state.assignedWorkers === 1 ? "" : "s"}.`
-        : `Storage is full. Dispatch ${recipe.output} to the warehouse to resume.`;
+    status === "storage_full"
+      ? `Storage is full. Dispatch ${recipe.output} to the warehouse to resume.`
+      : staffing === "full"
+        ? `Producing ${recipe.output} at 100% labor efficiency every ${recipe.cycleMs / 1000} seconds.`
+        : staffing === "unassigned"
+          ? `No workers assigned. Needs ${recipe.requiredWorkers} workers to produce.`
+          : `Worker shortage: producing at ${Math.round(efficiency * 100)}% labor efficiency and needs ${recipe.requiredWorkers - state.assignedWorkers} more worker${recipe.requiredWorkers - state.assignedWorkers === 1 ? "" : "s"}.`;
   return {
     ...state,
     type: building.type,
@@ -142,6 +178,8 @@ export function describeProduction(
     ...recipe,
     status,
     statusReason,
+    laborEfficiency: efficiency,
+    laborStatus: staffing,
   };
 }
 

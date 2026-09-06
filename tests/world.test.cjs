@@ -761,7 +761,7 @@ test("production advances from explicit simulation time and explains idle states
   const quarry = initial.sites.find((site) => site.type === "quarry");
   assert.equal(farm.status, "running");
   assert.equal(lumber.status, "missing_workers");
-  assert.match(lumber.statusReason, /Needs 2 more workers/);
+  assert.match(lumber.statusReason, /Needs 2 workers/);
   assert.equal(quarry.status, "storage_full");
   assert.match(quarry.statusReason, /Dispatch stone/);
   const advanced = simulation.read(9_000).economy;
@@ -831,6 +831,136 @@ test("production advances from explicit simulation time and explains idle states
     ).status,
     422,
   );
+});
+
+test("labor capacity scales production deterministically and survives save loading", () => {
+  const {
+    advanceProduction,
+  } = require("../world/domain/production.ts");
+  const {
+    describeLabor,
+    laborEfficiency,
+  } = require("../world/domain/labor.ts");
+  const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
+
+  assert.equal(laborEfficiency(1, 2), 0.5);
+  assert.equal(laborEfficiency(2, 2), 1);
+  assert.deepEqual(
+    describeLabor(6, [
+      { assignedWorkers: 2, requiredWorkers: 2 },
+      { assignedWorkers: 1, requiredWorkers: 2 },
+      { assignedWorkers: 3, requiredWorkers: 3 },
+    ]),
+    {
+      totalWorkforce: 6,
+      assignedWorkers: 6,
+      unassignedWorkers: 0,
+      shortageBuildings: 1,
+    },
+  );
+  assert.throws(
+    () =>
+      describeLabor(5, [
+        { assignedWorkers: 2, requiredWorkers: 2 },
+        { assignedWorkers: 1, requiredWorkers: 2 },
+        { assignedWorkers: 3, requiredWorkers: 3 },
+      ]),
+    /cannot exceed/,
+  );
+
+  const halfStaffedFarm = {
+    buildingId: "partial-farm",
+    assignedWorkers: 1,
+    stored: 0,
+    progressMs: 0,
+    laborRemainder: 0,
+    updatedAt: 0,
+  };
+  const partial = advanceProduction(halfStaffedFarm, "farm", 16_000);
+  assert.equal(partial.stored, 4);
+  assert.equal(partial.progressMs, 0);
+  const full = advanceProduction(
+    { ...halfStaffedFarm, assignedWorkers: 2 },
+    "farm",
+    8_000,
+  );
+  assert.equal(full.stored, 4);
+
+  let split = {
+    ...halfStaffedFarm,
+    buildingId: "split-quarry",
+    assignedWorkers: 2,
+  };
+  for (let time = 1_000; time <= 18_000; time += 1_000)
+    split = advanceProduction(split, "quarry", time);
+  const single = advanceProduction(
+    { ...split, stored: 0, progressMs: 0, laborRemainder: 0, updatedAt: 0 },
+    "quarry",
+    18_000,
+  );
+  assert.equal(split.stored, 2);
+  assert.deepEqual(
+    (({ stored, progressMs, laborRemainder }) => ({
+      stored,
+      progressMs,
+      laborRemainder,
+    }))(split),
+    (({ stored, progressMs, laborRemainder }) => ({
+      stored,
+      progressMs,
+      laborRemainder,
+    }))(single),
+  );
+  const removed = advanceProduction(
+    { ...partial, assignedWorkers: 0, updatedAt: 16_000 },
+    "farm",
+    40_000,
+  );
+  assert.equal(removed.stored, partial.stored);
+  assert.equal(removed.progressMs, partial.progressMs);
+
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const initial = simulation.read(1_000).economy;
+  assert.deepEqual(initial.labor, {
+    totalWorkforce: 6,
+    assignedWorkers: 5,
+    unassignedWorkers: 1,
+    shortageBuildings: 1,
+  });
+  const farm = initial.sites.find((site) => site.type === "farm");
+  const lumber = initial.sites.find((site) => site.type === "lumber_camp");
+  const overAllocated = simulation.execute(
+    { type: "set_workers", buildingId: lumber.buildingId, workers: 2 },
+    1_000,
+  );
+  assert.equal(overAllocated.status, 422);
+  assert.deepEqual(overAllocated.readModel.economy.labor, initial.labor);
+  const reduced = simulation.execute(
+    { type: "set_workers", buildingId: farm.buildingId, workers: 1 },
+    1_000,
+  );
+  assert.equal(reduced.ok, true);
+  assert.equal(
+    reduced.readModel.economy.sites.find(
+      (site) => site.buildingId === farm.buildingId,
+    ).laborEfficiency,
+    0.5,
+  );
+  assert.deepEqual(reduced.readModel.economy.labor, {
+    totalWorkforce: 6,
+    assignedWorkers: 4,
+    unassignedWorkers: 2,
+    shortageBuildings: 2,
+  });
+  const loaded = LocalGameSimulation.fromSave(
+    JSON.parse(JSON.stringify(simulation.exportSave())),
+  ).read(1_000);
+  assert.equal(
+    loaded.economy.sites.find((site) => site.buildingId === farm.buildingId)
+      .assignedWorkers,
+    1,
+  );
+  assert.deepEqual(loaded.economy.labor, reduced.readModel.economy.labor);
 });
 
 test("local authority is deterministic, monotonic, and exports versioned state", () => {

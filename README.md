@@ -173,6 +173,21 @@ Milestone 13 does not add commodities, recipes, NPC actors, migration, consumpti
 
 For the playable-loop check, open Build, choose Farm, and use Find site or inspect farmland beside Harvest Road. Build two Farms, release workers from another producer, staff a new Farm, and use 5× to observe its local food storage. Dispatch output, inspect a Warehouse after arrival, build with the delivered materials, pause a producer, and demolish a nonessential structure. Reload the page and confirm the constructed world, inventory, assignments, and simulation time resume from the local save.
 
+## Milestone 14: labor and worker allocation
+
+- Working-age population now supplies one finite workforce read model with total, assigned, and unassigned workers plus the number of production buildings experiencing a labor shortage.
+- A shared labor policy calculates `min(1, assigned workers / required workers)` once for every producer type. Farm, Lumber Camp, and Quarry expose the same labor status and efficiency fields instead of implementing separate formulas.
+- Partial staffing now advances production proportionally. A Farm with one of two required workers operates at 50% labor efficiency and completes its four-food batch in 16 seconds; full staffing retains the existing eight-second cycle.
+- Exact integer remainder carry makes partial work deterministic across timer frequency, Pause, 1×, 2×, 5×, and direct simulation-time jumps. Commodity output remains in complete recipe batches.
+- The existing `set_workers` command uses the shared labor validator. It prevents assignments above a building requirement or above the settlement workforce and continues to replace one building's allocation without double-counting it.
+- The player and economy HUDs show Workforce, Assigned, Available, and Labor shortages. Producer inspection and the company list show assigned/required workers and labor efficiency, with clear Unassigned, Worker shortage, Full staffing, or Storage full consequences.
+- Version 1 saves preserve worker allocation and an optional fractional-work remainder. Milestone 13 saves load with a zero remainder, so the save version remains compatible.
+- Existing per-building worker controls remain available from earlier milestones. This milestone adds no settlement-wide labor-management interface, assignment priorities, wages, professions, skills, education, migration, citizen entities, automation, or NPC labor market.
+
+`world/domain/labor.ts` owns labor capacity validation, status, efficiency, deterministic work conversion, and aggregate labor snapshots. Production consumes that policy, while `LocalGameSimulation` remains the sole owner of assignment state.
+
+For labor verification, inspect the starting workforce of 6 with 5 assigned and 1 available. Remove one worker from the Farm and confirm it reports 1/2 workers, 50% efficiency, and a worker shortage while continuing to produce at half speed. Release all workers and confirm progress stops. Attempt to assign more than six workers across producers and confirm the command is rejected, then reload and verify the accepted allocation is restored.
+
 ## Run and verify
 
 ```bash
@@ -199,6 +214,6 @@ For the market, choose Market in the top navigation. Compare each price trend an
 
 `presentation/world/projection.ts` owns coordinate transforms, bounded camera operations, visible chunk selection, and elevated terrain face picking. `buildings.ts` owns swappable primitive visual sets and derives geometry from semantic building positions. `render.ts` maps the visible semantic scene and selected visual set to shaded Canvas polygons. `world-map.tsx` owns presentation-only camera, selection, visual-profile, and UI state. Rendering runs when those inputs change rather than in a perpetual simulation loop.
 
-The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry, visible scene selection, and depth ordering remain presentation responsibilities. Picking scans only visible chunk cells in reverse painter order with a bounds check. Construction, demolition, production, shipments, warehouse arrivals, market ticks, sales, and worker assignments cross the local simulation command and validation boundary. The aggregate population-needs snapshot is derived from accepted world, assignments, and warehouse inventory; it has no renderer state. Version 1 local saves contain domain state only and are restored inside the client-owned simulation boundary. Competing companies and ownership remain unimplemented.
+The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry, visible scene selection, and depth ordering remain presentation responsibilities. Picking scans only visible chunk cells in reverse painter order with a bounds check. Construction, demolition, production, shipments, warehouse arrivals, market ticks, sales, and worker assignments cross the local simulation command and validation boundary. Population supplies finite workforce; labor efficiency converts explicit elapsed time into deterministic productive work before existing recipes create output. These read models contain no renderer state. Version 1 local saves contain domain state only and are restored inside the client-owned simulation boundary. Competing companies and ownership remain unimplemented.
 
 The blueprint and reference image describe the long-term destination, not the current art target.

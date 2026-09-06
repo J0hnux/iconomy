@@ -36,6 +36,10 @@ import {
 } from "../domain/production";
 import { describePopulation } from "../domain/population";
 import {
+  describeLabor,
+  validateLaborAssignment,
+} from "../domain/labor";
+import {
   buildingDefinitions,
   withStartingSettlement,
   type Building,
@@ -182,6 +186,8 @@ function isLocalSimulationSaveV1(
       isNonnegativeInteger(state.assignedWorkers) &&
       isNonnegativeInteger(state.stored) &&
       isNonnegativeInteger(state.progressMs) &&
+      (state.laborRemainder === undefined ||
+        isNonnegativeInteger(state.laborRemainder)) &&
       Number.isSafeInteger(state.updatedAt),
   );
 }
@@ -282,6 +288,7 @@ export class LocalGameSimulation {
               stored:
                 building.type === "quarry" ? recipe.storageCapacity : 0,
               progressMs: 0,
+              laborRemainder: 0,
               updatedAt: startTime,
             },
           ];
@@ -495,6 +502,7 @@ export class LocalGameSimulation {
         assignedWorkers: 0,
         stored: 0,
         progressMs: 0,
+        laborRemainder: 0,
         updatedAt: this.state.simulationTime,
       });
     }
@@ -570,14 +578,10 @@ export class LocalGameSimulation {
     if (!building || !state)
       return this.failure(404, "Production site was not found.");
     const recipe = productionRecipes[building.type];
-    if (
-      !Number.isInteger(workers) ||
-      workers < 0 ||
-      workers > recipe.requiredWorkers
-    )
+    if (!Number.isInteger(workers) || workers < 0)
       return this.failure(
         422,
-        `Workers must be between 0 and ${recipe.requiredWorkers}.`,
+        "Workers must be a nonnegative integer.",
       );
     const assignedElsewhere = [...this.state.productionStates.values()].reduce(
       (total, candidate) =>
@@ -590,11 +594,13 @@ export class LocalGameSimulation {
       0,
       this.state.warehouseInventory.food,
     ).workingAgePopulation;
-    if (assignedElsewhere + workers > workingAgePopulation)
-      return this.failure(
-        422,
-        "Novagrad does not have enough available workers.",
-      );
+    const validation = validateLaborAssignment(
+      workingAgePopulation,
+      assignedElsewhere,
+      workers,
+      recipe.requiredWorkers,
+    );
+    if (!validation.valid) return this.failure(422, validation.reason);
     this.state.productionStates.set(buildingId, {
       ...state,
       assignedWorkers: workers,
@@ -603,9 +609,11 @@ export class LocalGameSimulation {
     this.addEvent(
       this.state.simulationTime,
       "production",
-      workers >= recipe.requiredWorkers
+      workers === recipe.requiredWorkers
         ? `${buildingDefinitions[building.type].name} started production.`
-        : `${buildingDefinitions[building.type].name} worker assignment changed to ${workers}/${recipe.requiredWorkers}.`,
+        : workers === 0
+          ? `${buildingDefinitions[building.type].name} paused and released its workers.`
+          : `${buildingDefinitions[building.type].name} has a worker shortage at ${workers}/${recipe.requiredWorkers}.`,
     );
     return this.success();
   }
@@ -635,6 +643,7 @@ export class LocalGameSimulation {
       ...state,
       stored: 0,
       progressMs: 0,
+      laborRemainder: 0,
       updatedAt: this.state.simulationTime,
     });
     const shipment: Shipment = {
@@ -792,19 +801,28 @@ export class LocalGameSimulation {
       const site = state ? describeProduction(state, building) : null;
       return site ? [site] : [];
     });
-    const employedWorkers = sites.reduce(
-      (total, site) => total + site.assignedWorkers,
+    const totalWorkforce = describePopulation(
+      this.state.world,
       0,
+      this.state.warehouseInventory.food,
+    ).workingAgePopulation;
+    const labor = describeLabor(
+      totalWorkforce,
+      sites.map((site) => ({
+        assignedWorkers: site.assignedWorkers,
+        requiredWorkers: site.requiredWorkers,
+      })),
     );
     const population = describePopulation(
       this.state.world,
-      employedWorkers,
+      labor.assignedWorkers,
       this.state.warehouseInventory.food,
     );
     const listings = this.marketListings();
     return {
       simulationTime: this.state.simulationTime,
       population,
+      labor,
       sites,
       logistics: {
         routes: this.state.world.logisticsRoutes ?? [],

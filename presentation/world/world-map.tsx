@@ -632,7 +632,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestones 0–13
+              Prototype / Milestones 0–14
             </p>
           </div>
         </div>
@@ -1209,8 +1209,8 @@ export default function WorldMap({
                   </div>
                   {production && (
                     <span className="text-xs text-slate-400">
-                      {production.population.availableWorkers} /{" "}
-                      {production.population.workingAgePopulation} free
+                      {production.labor.unassignedWorkers} /{" "}
+                      {production.labor.totalWorkforce} available
                     </span>
                   )}
                 </div>
@@ -1220,11 +1220,13 @@ export default function WorldMap({
                       (candidate) => candidate.id === site.buildingId,
                     );
                     const statusLabel =
-                      site.status === "running"
-                        ? "Running"
-                        : site.status === "missing_workers"
-                          ? "Missing workers"
-                          : "Storage full";
+                      site.status === "storage_full"
+                        ? "Storage full"
+                        : site.laborStatus === "unassigned"
+                          ? "Unassigned"
+                          : site.laborStatus === "shortage"
+                            ? "Worker shortage"
+                            : "Running";
                     return (
                       <button
                         key={site.buildingId}
@@ -1248,7 +1250,8 @@ export default function WorldMap({
                           </span>
                           <span className="mt-1 block text-[10px] text-slate-400">
                             {site.assignedWorkers}/{site.requiredWorkers}{" "}
-                            workers · {site.stored}/{site.storageCapacity}{" "}
+                            workers · {Math.round(site.laborEfficiency * 100)}%
+                            {" labor · "}{site.stored}/{site.storageCapacity}{" "}
                             {site.output}
                           </span>
                         </span>
@@ -1561,11 +1564,13 @@ export default function WorldMap({
                 <span
                   className={`text-xs font-semibold ${selectedProduction.status === "running" ? "text-emerald-300" : selectedProduction.status === "missing_workers" ? "text-amber-300" : "text-red-300"}`}
                 >
-                  {selectedProduction.status === "running"
-                    ? "● Running"
-                    : selectedProduction.status === "missing_workers"
-                      ? "● Missing workers"
-                      : "● Storage full"}
+                  {selectedProduction.status === "storage_full"
+                    ? "● Storage full"
+                    : selectedProduction.laborStatus === "unassigned"
+                      ? "● Unassigned"
+                      : selectedProduction.laborStatus === "shortage"
+                        ? "● Worker shortage"
+                        : "● Running"}
                 </span>
                 <span className="text-xs capitalize text-slate-400">
                   {selectedProduction.output}
@@ -1580,6 +1585,10 @@ export default function WorldMap({
                   {selectedProduction.assignedWorkers} /{" "}
                   {selectedProduction.requiredWorkers}
                 </span>
+              </div>
+              <div className="mt-2 flex items-center justify-between text-xs">
+                <span className="text-slate-400">Labor efficiency</span>
+                <span>{Math.round(selectedProduction.laborEfficiency * 100)}%</span>
               </div>
               <div className="mt-2 flex gap-2">
                 <button
@@ -1603,7 +1612,7 @@ export default function WorldMap({
                     productionBusy ||
                     selectedProduction.assignedWorkers >=
                       selectedProduction.requiredWorkers ||
-                    (production?.population.availableWorkers ?? 0) === 0
+                    (production?.labor.unassignedWorkers ?? 0) === 0
                   }
                   onClick={() =>
                     void updateProduction(

@@ -71,10 +71,10 @@ export function PlayerHud({
                 world.settlement?.population ??
                 0,
             ],
-            ["Working age", snapshot?.population.workingAgePopulation ?? "—"],
-            ["Employed", snapshot?.population.employedWorkers ?? "—"],
-            ["Unemployed", snapshot?.population.unemployedWorkers ?? "—"],
-            ["Free workers", snapshot?.population.availableWorkers ?? "—"],
+            ["Workforce", snapshot?.labor.totalWorkforce ?? "—"],
+            ["Assigned", snapshot?.labor.assignedWorkers ?? "—"],
+            ["Available", snapshot?.labor.unassignedWorkers ?? "—"],
+            ["Labor shortages", snapshot?.labor.shortageBuildings ?? "—"],
             ["Housing capacity", snapshot?.population.housingCapacity ?? "—"],
             ["Food supply", snapshot?.population.foodSupply ?? "—"],
           ].map(([label, value]) => (
@@ -279,15 +279,16 @@ export function BottomHud({
         <dl className="space-y-2 text-xs">
           {[
             ["Population", snapshot?.population.totalPopulation ?? "—"],
-            ["Working age", snapshot?.population.workingAgePopulation ?? "—"],
-            ["Employed", snapshot?.population.employedWorkers ?? "—"],
-            ["Unemployed", snapshot?.population.unemployedWorkers ?? "—"],
+            ["Workforce", snapshot?.labor.totalWorkforce ?? "—"],
+            ["Assigned", snapshot?.labor.assignedWorkers ?? "—"],
+            ["Available", snapshot?.labor.unassignedWorkers ?? "—"],
+            ["Labor shortages", snapshot?.labor.shortageBuildings ?? "—"],
             ["Housing capacity", snapshot?.population.housingCapacity ?? "—"],
             ["Food supply", snapshot?.population.foodSupply ?? "—"],
             [
               "Producing sites",
               snapshot
-                ? `${snapshot.sites.filter((site) => site.status === "running").length} / ${snapshot.sites.length}`
+                ? `${snapshot.sites.filter((site) => site.assignedWorkers > 0 && site.status !== "storage_full").length} / ${snapshot.sites.length}`
                 : "—",
             ],
             [
