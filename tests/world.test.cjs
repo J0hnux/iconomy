@@ -495,9 +495,17 @@ test("local simulation enforces construction revision and authoritative validati
     y: road.y,
     rotation: "north",
   };
+  const quarry = initial.economy.sites.find((site) => site.type === "quarry");
+  const stoneShipment = simulation.execute(
+    { type: "dispatch_production", buildingId: quarry.buildingId },
+    1_000,
+  );
+  assert.equal(stoneShipment.ok, true);
+  const buildTime = stoneShipment.shipment.arrivalTime;
+  simulation.read(buildTime);
   const accepted = simulation.execute(
     { type: "construct", expectedRevision: 0, placement },
-    1_000,
+    buildTime,
   );
   assert.equal(accepted.ok, true);
   assert.equal(accepted.readModel.revision, 1);
@@ -509,7 +517,7 @@ test("local simulation enforces construction revision and authoritative validati
       expectedRevision: 0,
       placement: { ...placement, x: placement.x + 1 },
     },
-    1_000,
+    buildTime,
   );
   assert.equal(stale.status, 409);
   assert.equal(stale.readModel.revision, 1);
@@ -528,6 +536,151 @@ test("local simulation enforces construction revision and authoritative validati
     1_000,
   );
   assert.equal(invalid.status, 422);
+});
+
+test("player construction charges once, supports multiple farms, production, save loading, and demolition", () => {
+  const { validatePlacement } = require("../world/domain/construction.ts");
+  const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const findPlacement = (currentWorld, type) => {
+    const cell = currentWorld.cells.find((candidate) =>
+      validatePlacement(currentWorld, {
+        type,
+        x: candidate.x,
+        y: candidate.y,
+        rotation: "north",
+      }).valid,
+    );
+    assert.ok(cell, `Expected a valid ${type} placement`);
+    return { type, x: cell.x, y: cell.y, rotation: "north" };
+  };
+
+  const initial = simulation.read(1_000);
+  const initialCash = initial.economy.market.cashCents;
+  const firstPlacement = findPlacement(initial.world, "farm");
+  const first = simulation.execute(
+    { type: "construct", expectedRevision: 0, placement: firstPlacement },
+    1_000,
+  );
+  assert.equal(first.ok, true);
+  assert.equal(first.readModel.economy.market.cashCents, initialCash - 20_000);
+  assert.equal(first.readModel.economy.logistics.warehouseInventory.wood, 2);
+  assert.equal(
+    first.readModel.economy.sites.find(
+      (site) => site.buildingId === first.building.id,
+    ).status,
+    "missing_workers",
+  );
+  assert.ok(
+    first.readModel.economy.logistics.routes.some(
+      (route) => route.originBuildingId === first.building.id,
+    ),
+  );
+
+  const chargedState = simulation.exportSave();
+  const staleReplay = simulation.execute(
+    { type: "construct", expectedRevision: 0, placement: firstPlacement },
+    1_000,
+  );
+  assert.equal(staleReplay.status, 409);
+  assert.deepEqual(simulation.exportSave(), chargedState);
+  const occupied = simulation.execute(
+    { type: "construct", expectedRevision: 1, placement: firstPlacement },
+    1_000,
+  );
+  assert.equal(occupied.status, 422);
+  assert.match(occupied.error, /occupied/);
+  assert.deepEqual(simulation.exportSave(), chargedState);
+
+  const secondPlacement = findPlacement(first.readModel.world, "farm");
+  const second = simulation.execute(
+    { type: "construct", expectedRevision: 1, placement: secondPlacement },
+    1_000,
+  );
+  assert.equal(second.ok, true);
+  assert.equal(
+    second.readModel.world.buildings.filter((building) => building.type === "farm")
+      .length,
+    3,
+  );
+  assert.equal(second.readModel.economy.logistics.warehouseInventory.wood, 1);
+
+  const restored = LocalGameSimulation.fromSave(
+    JSON.parse(JSON.stringify(simulation.exportSave())),
+  );
+  assert.deepEqual(
+    restored.read(restored.exportSave().simulationTime),
+    simulation.read(simulation.exportSave().simulationTime),
+  );
+  assert.throws(() => LocalGameSimulation.fromSave({ saveVersion: 2 }), /invalid/);
+
+  const startingFarm = second.readModel.economy.sites.find(
+    (site) => site.type === "farm" && !site.buildingId.startsWith("player-"),
+  );
+  assert.equal(
+    simulation.execute(
+      { type: "set_workers", buildingId: startingFarm.buildingId, workers: 0 },
+      1_000,
+    ).ok,
+    true,
+  );
+  assert.equal(
+    simulation.execute(
+      { type: "set_workers", buildingId: first.building.id, workers: 2 },
+      1_000,
+    ).ok,
+    true,
+  );
+  const produced = simulation.read(9_000);
+  assert.equal(
+    produced.economy.sites.find(
+      (site) => site.buildingId === first.building.id,
+    ).stored,
+    4,
+  );
+  const demolished = simulation.execute(
+    { type: "demolish", buildingId: first.building.id },
+    9_000,
+  );
+  assert.equal(demolished.ok, true);
+  assert.ok(
+    !demolished.readModel.world.buildings.some(
+      (building) => building.id === first.building.id,
+    ),
+  );
+  assert.ok(
+    !demolished.readModel.economy.sites.some(
+      (site) => site.buildingId === first.building.id,
+    ),
+  );
+  assert.equal(demolished.readModel.economy.population.availableWorkers, 3);
+});
+
+test("unaffordable construction leaves authoritative resources unchanged", () => {
+  const { validatePlacement } = require("../world/domain/construction.ts");
+  const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const before = simulation.exportSave();
+  const cell = before.world.cells.find((candidate) =>
+    validatePlacement(before.world, {
+      type: "house",
+      x: candidate.x,
+      y: candidate.y,
+      rotation: "north",
+    }).valid,
+  );
+  assert.ok(cell);
+  const result = simulation.execute(
+    {
+      type: "construct",
+      expectedRevision: 0,
+      placement: { type: "house", x: cell.x, y: cell.y, rotation: "north" },
+    },
+    1_000,
+  );
+  assert.equal(result.status, 422);
+  assert.match(result.error, /Need 1 more stone/);
+  assert.deepEqual(simulation.exportSave(), before);
 });
 
 test("population needs derive deterministically from authoritative world and economy state", () => {

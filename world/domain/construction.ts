@@ -5,13 +5,67 @@ import {
   type BuildingRotation,
   type BuildingType,
 } from "./settlement";
+import type { Commodity } from "./production";
 import type { SurfaceCell, WorldSnapshot } from "./world";
 
 export const constructibleBuildingTypes = [
+  "farm",
+  "lumber_camp",
+  "quarry",
   "house",
   "warehouse",
   "workshop",
 ] as const satisfies readonly BuildingType[];
+export type ConstructibleBuildingType =
+  (typeof constructibleBuildingTypes)[number];
+
+export type ConstructionCost = Readonly<{
+  cashCents: number;
+  materials: Readonly<Partial<Record<Commodity, number>>>;
+}>;
+
+export const constructionCosts = {
+  farm: { cashCents: 20_000, materials: { wood: 1 } },
+  lumber_camp: { cashCents: 30_000, materials: { wood: 1 } },
+  quarry: { cashCents: 35_000, materials: { wood: 1 } },
+  house: { cashCents: 15_000, materials: { wood: 1, stone: 1 } },
+  warehouse: { cashCents: 50_000, materials: { wood: 2, stone: 2 } },
+  workshop: { cashCents: 25_000, materials: { wood: 1, stone: 1 } },
+} as const satisfies Record<ConstructibleBuildingType, ConstructionCost>;
+
+export type ConstructionResourceValidation = Readonly<{
+  affordable: boolean;
+  reasons: readonly string[];
+}>;
+
+export function isConstructibleBuildingType(
+  type: BuildingType,
+): type is ConstructibleBuildingType {
+  return constructibleBuildingTypes.includes(type as ConstructibleBuildingType);
+}
+
+export function validateConstructionResources(
+  type: BuildingType,
+  cashCents: number,
+  inventory: Readonly<Record<Commodity, number>>,
+): ConstructionResourceValidation {
+  if (!isConstructibleBuildingType(type))
+    return { affordable: false, reasons: ["Building type is unavailable"] };
+  const cost = constructionCosts[type];
+  const reasons: string[] = [];
+  if (cashCents < cost.cashCents) {
+    const missing = cost.cashCents - cashCents;
+    reasons.push(`Need $${(missing / 100).toFixed(2)} more credits`);
+  }
+  for (const [commodity, quantity] of Object.entries(cost.materials) as [
+    Commodity,
+    number,
+  ][]) {
+    const missing = quantity - inventory[commodity];
+    if (missing > 0) reasons.push(`Need ${missing} more ${commodity}`);
+  }
+  return { affordable: reasons.length === 0, reasons };
+}
 
 export type PlacementRequest = Readonly<{
   type: BuildingType;
@@ -33,11 +87,7 @@ export function validatePlacement(
 ): PlacementValidation {
   const reasons: string[] = [];
   const cells: SurfaceCell[] = [];
-  if (
-    !constructibleBuildingTypes.includes(
-      request.type as (typeof constructibleBuildingTypes)[number],
-    )
-  ) {
+  if (!isConstructibleBuildingType(request.type)) {
     return {
       valid: false,
       reasons: ["Building type is unavailable"],
@@ -73,7 +123,37 @@ export function validatePlacement(
       cells.push(world.cells[y * world.size + x]);
     }
   }
-  if (cells.some((cell) => cell.terrain !== "grassland"))
+  const resourceTypes = new Map(
+    world.resourceNodes.map((node) => [node.id, node.type]),
+  );
+  if (
+    request.type === "farm" &&
+    cells.some((cell) => cell.terrain !== "farmland")
+  )
+    reasons.push("Farm requires farmland");
+  else if (
+    request.type === "lumber_camp" &&
+    cells.some(
+      (cell) =>
+        !cell.resourceNodeId ||
+        resourceTypes.get(cell.resourceNodeId) !== "forest",
+    )
+  )
+    reasons.push("Lumber Camp requires a forest resource");
+  else if (
+    request.type === "quarry" &&
+    cells.some(
+      (cell) =>
+        !cell.resourceNodeId || resourceTypes.get(cell.resourceNodeId) !== "stone",
+    )
+  )
+    reasons.push("Quarry requires a stone resource");
+  else if (
+    request.type !== "farm" &&
+    request.type !== "lumber_camp" &&
+    request.type !== "quarry" &&
+    cells.some((cell) => cell.terrain !== "grassland")
+  )
     reasons.push("Requires grassland");
   const elevation = cells[0]?.z ?? null;
   if (cells.some((cell) => cell.z !== elevation))

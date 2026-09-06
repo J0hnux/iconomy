@@ -157,6 +157,22 @@ For local-authority verification, reload the page, assign workers, dispatch outp
 
 For population verification, open the player or economy HUD and confirm 10 total citizens, 6 working-age citizens, 5 employed, 1 unemployed/available, 12 housing capacity, and the current warehouse food count. Build a House and confirm capacity becomes 14. Try to assign more than 6 workers across all producers and confirm the command is rejected. Wait for food to arrive or sell food and confirm food supply follows warehouse inventory.
 
+## Milestone 13: player agency and first playable economy loop
+
+- The Build panel now offers Farm, Lumber Camp, Quarry, House, Warehouse, and Workshop cards with their authoritative credit/material costs, footprint, purpose, worker requirement where applicable, and current affordability. A Find site action focuses a physically valid location for the selected structure.
+- Placement applies each existing economic geography rule: Farms use farmland, Lumber Camps use forest resources, Quarries use stone resources, and civic structures use grassland. Every structure still requires level ground and an adjacent road connected to Novagrad Warehouse.
+- Construction costs are centralized in `world/domain/construction.ts`. An accepted command atomically deducts credits and warehouse wood/stone, places the building, initializes producer state and logistics when needed, records an event, and returns the updated read model. Rejected or repeated commands deduct nothing.
+- Players may build repeated producers while land and resources allow. Newly built producers start with zero workers and immediately appear in the existing production controls; assigning workers runs the existing recipe, storage, dispatch, shipment, and market-supply loop.
+- Building inspection retains production status, output per cycle, workers, progress, local storage, and dispatch controls. A dedicated pause action releases all assigned workers. Demolition removes occupancy, production state, routes, housing capacity, and worker assignments through the local command boundary. The founding Camp and primary Warehouse are protected, and producers with cargo in transit must wait for arrival.
+- Pause, 1×, 2×, and 5× controls advance the same explicit deterministic simulation clock independently of Canvas frame rate. Commands continue to work at the current simulation time while paused.
+- Version 1 saves can now be validated and restored. The browser automatically stores the authoritative save in localStorage after simulation updates and resumes from saved simulation time without offline progression.
+- Player feedback reports construction costs, affordability gaps, physical placement failures, production state, demolition, inventory, credits, and economy events without requiring developer tools.
+- Player-built Warehouses provide another map location from which to inspect the settlement's existing shared inventory. Aggregate warehouse capacity and player-built roads remain future work because neither system had an authoritative Milestone 12 model.
+
+Milestone 13 does not add commodities, recipes, NPC actors, migration, consumption, wages, banking, contracts, technology, or regional markets.
+
+For the playable-loop check, open Build, choose Farm, and use Find site or inspect farmland beside Harvest Road. Build two Farms, release workers from another producer, staff a new Farm, and use 5× to observe its local food storage. Dispatch output, inspect a Warehouse after arrival, build with the delivered materials, pause a producer, and demolish a nonessential structure. Reload the page and confirm the constructed world, inventory, assignments, and simulation time resume from the local save.
+
 ## Run and verify
 
 ```bash
@@ -183,6 +199,6 @@ For the market, choose Market in the top navigation. Compare each price trend an
 
 `presentation/world/projection.ts` owns coordinate transforms, bounded camera operations, visible chunk selection, and elevated terrain face picking. `buildings.ts` owns swappable primitive visual sets and derives geometry from semantic building positions. `render.ts` maps the visible semantic scene and selected visual set to shaded Canvas polygons. `world-map.tsx` owns presentation-only camera, selection, visual-profile, and UI state. Rendering runs when those inputs change rather than in a perpetual simulation loop.
 
-The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry, visible scene selection, and depth ordering remain presentation responsibilities. Picking scans only visible chunk cells in reverse painter order with a bounds check. Construction, production, shipments, warehouse arrivals, market ticks, sales, and worker assignments cross the local simulation command and validation boundary. The aggregate population-needs snapshot is derived from accepted world, assignments, and warehouse inventory; it has no renderer state. Browser persistence, competing companies, and ownership remain unimplemented.
+The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry, visible scene selection, and depth ordering remain presentation responsibilities. Picking scans only visible chunk cells in reverse painter order with a bounds check. Construction, demolition, production, shipments, warehouse arrivals, market ticks, sales, and worker assignments cross the local simulation command and validation boundary. The aggregate population-needs snapshot is derived from accepted world, assignments, and warehouse inventory; it has no renderer state. Version 1 local saves contain domain state only and are restored inside the client-owned simulation boundary. Competing companies and ownership remain unimplemented.
 
 The blueprint and reference image describe the long-term destination, not the current art target.

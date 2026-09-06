@@ -101,6 +101,86 @@ function shortestConnection(
   return path.reverse();
 }
 
+function shortestRoadPath(
+  world: WorldSnapshot,
+  origin: Building,
+  destination: Building,
+) {
+  const roads = new Map((world.roads ?? []).map((road) => [keyOf(road), road]));
+  const starts = adjacentCells(world, origin).filter((cell) =>
+    roads.has(keyOf(cell)),
+  );
+  const targets = new Set(
+    adjacentCells(world, destination)
+      .filter((cell) => roads.has(keyOf(cell)))
+      .map(keyOf),
+  );
+  const queue = [...starts];
+  const previous = new Map<string, string | null>(
+    starts.map((cell) => [keyOf(cell), null]),
+  );
+  let found: WorldPosition | undefined;
+  for (let index = 0; index < queue.length && !found; index++) {
+    const current = queue[index];
+    if (targets.has(keyOf(current))) {
+      found = current;
+      break;
+    }
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
+      const next = roads.get(`${current.x + dx},${current.y + dy}`);
+      if (!next || previous.has(keyOf(next))) continue;
+      previous.set(keyOf(next), keyOf(current));
+      queue.push(next);
+    }
+  }
+  if (!found) return [];
+  const path: WorldPosition[] = [];
+  let cursor: string | null = keyOf(found);
+  while (cursor) {
+    const road = roads.get(cursor);
+    if (!road) return [];
+    path.push(road);
+    cursor = previous.get(cursor) ?? null;
+  }
+  return path.reverse();
+}
+
+export function connectProducerToWarehouse(
+  world: WorldSnapshot,
+  producer: Building & { type: ProducerType },
+  warehouse: Building,
+): WorldSnapshot {
+  const path = shortestRoadPath(world, producer, warehouse);
+  if (path.length === 0) return world;
+  const routeNames = {
+    farm: "Harvest Road",
+    lumber_camp: "Northwood Road",
+    quarry: "Ridge Road",
+  } as const;
+  const route: LogisticsRoute = {
+    id: `${producer.id}-to-${warehouse.id}`,
+    name: routeNames[producer.type],
+    originBuildingId: producer.id,
+    destinationBuildingId: warehouse.id,
+    path,
+    durationMs: Math.max(6_000, path.length * 180),
+  };
+  return {
+    ...world,
+    logisticsRoutes: [
+      ...(world.logisticsRoutes ?? []).filter(
+        (candidate) => candidate.originBuildingId !== producer.id,
+      ),
+      route,
+    ],
+  };
+}
+
 export function roadConnections(world: WorldSnapshot, position: WorldPosition) {
   const roads = new Set((world.roads ?? []).map(keyOf));
   return {

@@ -1,9 +1,14 @@
 import {
+  constructionCosts,
+  isConstructibleBuildingType,
   placeBuilding,
+  validateConstructionResources,
   validatePlacement,
+  type ConstructionCost,
   type PlacementRequest,
 } from "../domain/construction";
 import {
+  connectProducerToWarehouse,
   withStartingLogistics,
   type Shipment,
   type WarehouseInventory,
@@ -54,7 +59,8 @@ export type GameCommand =
       commodity: Commodity;
       quantity: number;
       expectedPriceCents: number;
-    }>;
+    }>
+  | Readonly<{ type: "demolish"; buildingId: string }>;
 
 export type GameReadModel = Readonly<{
   revision: number;
@@ -71,6 +77,8 @@ export type CommandResult =
       collected?: number;
       shipment?: Shipment;
       revenueCents?: number;
+      constructionCost?: ConstructionCost;
+      demolishedBuildingId?: string;
     }>
   | Readonly<{
       ok: false;
@@ -120,32 +128,120 @@ export function createStartingWorld() {
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isNonnegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isLocalSimulationSaveV1(
+  value: unknown,
+): value is LocalSimulationSaveV1 {
+  if (!isRecord(value) || value.saveVersion !== 1) return false;
+  const world = value.world;
+  const inventory = value.warehouseInventory;
+  const history = value.priceHistory;
+  const shortages = value.shortages;
+  if (
+    !isRecord(world) ||
+    !Array.isArray(world.cells) ||
+    !Array.isArray(world.resourceNodes) ||
+    !Array.isArray(world.chunks) ||
+    !Array.isArray(value.productionStates) ||
+    !Array.isArray(value.shipments) ||
+    !Array.isArray(value.events) ||
+    !isRecord(inventory) ||
+    !isRecord(history) ||
+    !isRecord(shortages)
+  )
+    return false;
+  if (
+    !Number.isSafeInteger(value.simulationTime) ||
+    !isNonnegativeInteger(value.revision) ||
+    !isNonnegativeInteger(value.nextShipment) ||
+    !isNonnegativeInteger(value.cashCents) ||
+    !isNonnegativeInteger(value.marketTick) ||
+    !Number.isSafeInteger(value.marketUpdatedAt) ||
+    !isNonnegativeInteger(value.nextEvent)
+  )
+    return false;
+  for (const commodity of Object.keys(marketDefinitions) as Commodity[]) {
+    if (
+      !isNonnegativeInteger(inventory[commodity]) ||
+      !Array.isArray(history[commodity]) ||
+      !["none", "low", "critical"].includes(shortages[commodity] as string)
+    )
+      return false;
+  }
+  return value.productionStates.every(
+    (state) =>
+      isRecord(state) &&
+      typeof state.buildingId === "string" &&
+      isNonnegativeInteger(state.assignedWorkers) &&
+      isNonnegativeInteger(state.stored) &&
+      isNonnegativeInteger(state.progressMs) &&
+      Number.isSafeInteger(state.updatedAt),
+  );
+}
+
 export class LocalGameSimulation {
-  private readonly producers: readonly (Building & { type: ProducerType })[];
-  private readonly warehouse: Building | undefined;
   private readonly state: MutableSimulationState;
 
-  constructor(world: WorldSnapshot, startTime: number) {
+  constructor(
+    world: WorldSnapshot,
+    startTime: number,
+    restored?: LocalSimulationSaveV1,
+  ) {
     this.assertTime(startTime);
-    this.producers = (world.buildings ?? []).filter(
+    if (restored) {
+      this.state = {
+        simulationTime: restored.simulationTime,
+        revision: restored.revision,
+        world: restored.world,
+        productionStates: new Map(
+          restored.productionStates.map((state) => [state.buildingId, { ...state }]),
+        ),
+        shipments: restored.shipments.map((shipment) => ({
+          ...shipment,
+          cargo: { ...shipment.cargo },
+        })),
+        warehouseInventory: { ...restored.warehouseInventory },
+        nextShipment: restored.nextShipment,
+        cashCents: restored.cashCents,
+        marketTick: restored.marketTick,
+        marketUpdatedAt: restored.marketUpdatedAt,
+        priceHistory: {
+          food: restored.priceHistory.food.map((point) => ({ ...point })),
+          wood: restored.priceHistory.wood.map((point) => ({ ...point })),
+          stone: restored.priceHistory.stone.map((point) => ({ ...point })),
+        },
+        shortages: { ...restored.shortages },
+        events: restored.events.map((event) => ({ ...event })),
+        nextEvent: restored.nextEvent,
+      };
+      return;
+    }
+    const producers = (world.buildings ?? []).filter(
       (building): building is Building & { type: ProducerType } =>
         isProducerType(building.type),
     );
-    this.warehouse = world.buildings?.find(
+    const warehouse = world.buildings?.find(
       (building) => building.type === "warehouse",
     );
-    const farm = this.producers.find((building) => building.type === "farm");
+    const farm = producers.find((building) => building.type === "farm");
     const demonstrationRoute = world.logisticsRoutes?.find(
       (route) => route.originBuildingId === farm?.id,
     );
     const shipments: Shipment[] =
-      farm && this.warehouse && demonstrationRoute
+      farm && warehouse && demonstrationRoute
         ? [
             {
               id: "shipment-1",
               routeId: demonstrationRoute.id,
               originBuildingId: farm.id,
-              destinationBuildingId: this.warehouse.id,
+              destinationBuildingId: warehouse.id,
               cargo: {
                 commodity: "food",
                 quantity: productionRecipes.farm.outputAmount,
@@ -175,7 +271,7 @@ export class LocalGameSimulation {
       revision: 0,
       world,
       productionStates: new Map(
-        this.producers.map((building) => {
+        producers.map((building) => {
           const recipe = productionRecipes[building.type];
           return [
             building.id,
@@ -231,6 +327,25 @@ export class LocalGameSimulation {
     };
   }
 
+  static fromSave(save: unknown): LocalGameSimulation {
+    if (!isLocalSimulationSaveV1(save))
+      throw new TypeError("The saved game is invalid or unsupported.");
+    return new LocalGameSimulation(save.world, save.simulationTime, save);
+  }
+
+  private get producers(): readonly (Building & { type: ProducerType })[] {
+    return (this.state.world.buildings ?? []).filter(
+      (building): building is Building & { type: ProducerType } =>
+        isProducerType(building.type),
+    );
+  }
+
+  private get warehouse(): Building | undefined {
+    return this.state.world.buildings?.find(
+      (building) => building.type === "warehouse",
+    );
+  }
+
   read(simulationTime: number): GameReadModel {
     this.advanceTo(simulationTime);
     return this.readModel();
@@ -251,6 +366,8 @@ export class LocalGameSimulation {
           command.quantity,
           command.expectedPriceCents,
         );
+      case "demolish":
+        return this.demolish(command.buildingId);
     }
   }
 
@@ -333,17 +450,114 @@ export class LocalGameSimulation {
     const validation = validatePlacement(this.state.world, command.placement);
     if (!validation.valid)
       return this.failure(422, validation.reasons.join(". "));
+    const resourceValidation = validateConstructionResources(
+      command.placement.type,
+      this.state.cashCents,
+      this.state.warehouseInventory,
+    );
+    if (!resourceValidation.affordable)
+      return this.failure(422, resourceValidation.reasons.join(". "));
+    if (!isConstructibleBuildingType(command.placement.type))
+      return this.failure(422, "Building type is unavailable.");
+    const cost = constructionCosts[command.placement.type];
     const id = `player-${this.state.revision + 1}`;
-    const world = placeBuilding(this.state.world, command.placement, id);
+    let world = placeBuilding(this.state.world, command.placement, id);
     const building = world.buildings?.at(-1);
     if (!building)
       return this.failure(422, "Construction could not be completed.");
+    if (isProducerType(building.type)) {
+      const producer = building as Building & { type: ProducerType };
+      const warehouse = this.warehouse;
+      if (!warehouse)
+        return this.failure(422, "A warehouse is required for production.");
+      world = connectProducerToWarehouse(world, producer, warehouse);
+      if (
+        !world.logisticsRoutes?.some(
+          (route) => route.originBuildingId === building.id,
+        )
+      )
+        return this.failure(
+          422,
+          "The adjacent road is not connected to Novagrad Warehouse.",
+        );
+    }
+    this.state.cashCents -= cost.cashCents;
+    for (const [commodity, quantity] of Object.entries(cost.materials) as [
+      Commodity,
+      number,
+    ][]) {
+      this.state.warehouseInventory[commodity] -= quantity;
+    }
     this.state.world = world;
+    if (isProducerType(building.type)) {
+      this.state.productionStates.set(building.id, {
+        buildingId: building.id,
+        assignedWorkers: 0,
+        stored: 0,
+        progressMs: 0,
+        updatedAt: this.state.simulationTime,
+      });
+    }
     this.state.revision++;
+    const materialSummary = Object.entries(cost.materials)
+      .map(([commodity, quantity]) => `${quantity} ${commodity}`)
+      .join(", ");
+    this.addEvent(
+      this.state.simulationTime,
+      "production",
+      `${buildingDefinitions[building.type].name} constructed for $${(cost.cashCents / 100).toFixed(2)}${materialSummary ? ` and ${materialSummary}` : ""}.`,
+    );
     return {
       ok: true,
       status: 201,
       building,
+      constructionCost: cost,
+      readModel: this.readModel(),
+    };
+  }
+
+  private demolish(buildingId: string): CommandResult {
+    const building = this.state.world.buildings?.find(
+      (candidate) => candidate.id === buildingId,
+    );
+    if (!building) return this.failure(404, "Building was not found.");
+    if (building.type === "camp")
+      return this.failure(422, "The settlement's founding camp cannot be demolished.");
+    if (building.type === "warehouse" && building.id === this.warehouse?.id)
+      return this.failure(422, "The primary warehouse cannot be demolished.");
+    if (
+      this.state.shipments.some(
+        (shipment) =>
+          shipment.originBuildingId === buildingId &&
+          shipment.status === "in_transit",
+      )
+    )
+      return this.failure(
+        422,
+        "Wait for this building's active shipment to arrive before demolition.",
+      );
+    this.state.world = {
+      ...this.state.world,
+      buildings: this.state.world.buildings?.filter(
+        (candidate) => candidate.id !== buildingId,
+      ),
+      logisticsRoutes: this.state.world.logisticsRoutes?.filter(
+        (route) =>
+          route.originBuildingId !== buildingId &&
+          route.destinationBuildingId !== buildingId,
+      ),
+    };
+    this.state.productionStates.delete(buildingId);
+    this.state.revision++;
+    this.addEvent(
+      this.state.simulationTime,
+      "production",
+      `${buildingDefinitions[building.type].name} demolished.`,
+    );
+    return {
+      ok: true,
+      status: 200,
+      demolishedBuildingId: buildingId,
       readModel: this.readModel(),
     };
   }

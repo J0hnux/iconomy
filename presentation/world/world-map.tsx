@@ -2,8 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  constructionCosts,
   constructibleBuildingTypes,
+  validateConstructionResources,
   validatePlacement,
+  type ConstructibleBuildingType,
   type PlacementRequest,
 } from "@/world/domain/construction";
 import {
@@ -11,13 +14,13 @@ import {
   buildingDefinitions,
   footprintOf,
   type BuildingRotation,
-  type BuildingType,
 } from "@/world/domain/settlement";
 import type {
   Commodity,
   ProductionSnapshot,
   ProductionSite,
 } from "@/world/domain/production";
+import { isProducerType, productionRecipes } from "@/world/domain/production";
 import type { PricePoint } from "@/world/domain/market";
 import {
   LocalGameSimulation,
@@ -57,6 +60,9 @@ const rotations: readonly BuildingRotation[] = [
   "south",
   "west",
 ];
+const simulationSpeeds = [0, 1, 2, 5] as const;
+type SimulationSpeed = (typeof simulationSpeeds)[number];
+const localSaveKey = "openworld-economy-save-v1";
 const terrainNames: Record<TerrainType, string> = {
   grassland: "Grassland",
   water: "Water",
@@ -67,6 +73,13 @@ const terrainNames: Record<TerrainType, string> = {
 
 const money = (cents: number) =>
   `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const materialSummary = (
+  materials: Readonly<Partial<Record<Commodity, number>>>,
+) =>
+  Object.entries(materials)
+    .map(([commodity, quantity]) => `${quantity} ${commodity}`)
+    .join(" · ");
 
 function PriceSparkline({ history }: { history: readonly PricePoint[] }) {
   const values = history.map((point) => point.priceCents);
@@ -106,6 +119,9 @@ export default function WorldMap({
   const logisticsCanvasRef = useRef<HTMLCanvasElement>(null);
   const simulationRef = useRef<LocalGameSimulation | null>(null);
   const simulationTimeRef = useRef(0);
+  const lastWallTimeRef = useRef(0);
+  const snapshotWallTimeRef = useRef(0);
+  const speedRef = useRef<SimulationSpeed>(1);
   const [world, setWorld] = useState(initialWorld);
   const [camera, setCamera] = useState<Camera>({
     focus: world.settlement
@@ -126,7 +142,8 @@ export default function WorldMap({
     useState<BuildingVisualProfileId>(defaultBuildingVisualProfile);
   const buildingVisualSet = buildingVisualProfiles[buildingVisualProfile];
   const [tool, setTool] = useState<"inspect" | "build">("inspect");
-  const [buildingType, setBuildingType] = useState<BuildingType>("house");
+  const [buildingType, setBuildingType] =
+    useState<ConstructibleBuildingType>("farm");
   const [rotation, setRotation] = useState<BuildingRotation>("north");
   const [hovered, setHovered] = useState<SurfaceCell | null>(null);
   const [revision, setRevision] = useState(0);
@@ -141,6 +158,7 @@ export default function WorldMap({
   const [companyOpen, setCompanyOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
   const [marketMessage, setMarketMessage] = useState<string | null>(null);
+  const [simulationSpeed, setSimulationSpeed] = useState<SimulationSpeed>(1);
   const drag = useRef<{
     id: number;
     startX: number;
@@ -158,8 +176,23 @@ export default function WorldMap({
       y: hovered.y,
       rotation,
     };
-    return { request, validation: validatePlacement(world, request) };
-  }, [tool, hovered, buildingType, rotation, world]);
+    const physical = validatePlacement(world, request);
+    const economic = production
+      ? validateConstructionResources(
+          buildingType,
+          production.market.cashCents,
+          production.logistics.warehouseInventory,
+        )
+      : { affordable: false, reasons: ["Simulation is starting"] };
+    return {
+      request,
+      validation: {
+        ...physical,
+        valid: physical.valid && economic.affordable,
+        reasons: [...physical.reasons, ...economic.reasons],
+      },
+    };
+  }, [tool, hovered, buildingType, rotation, world, production]);
   const scene = useMemo(
     () => visibleScene(world, camera, viewport),
     [world, camera, viewport],
@@ -173,9 +206,24 @@ export default function WorldMap({
     [world, scene],
   );
   const applyReadModel = useCallback((readModel: GameReadModel) => {
+    snapshotWallTimeRef.current = Date.now();
     setWorld(readModel.world);
     setRevision(readModel.revision);
     setProduction(readModel.economy);
+  }, []);
+
+  const persistSimulation = useCallback((simulation: LocalGameSimulation) => {
+    window.localStorage.setItem(
+      localSaveKey,
+      JSON.stringify(simulation.exportSave()),
+    );
+  }, []);
+  const currentSimulationTime = useCallback(() => {
+    const now = Date.now();
+    const elapsed = Math.max(0, now - lastWallTimeRef.current);
+    lastWallTimeRef.current = now;
+    simulationTimeRef.current += Math.round(elapsed * speedRef.current);
+    return simulationTimeRef.current;
   }, []);
 
   useEffect(() => {
@@ -239,10 +287,11 @@ export default function WorldMap({
     canvas.style.width = `${viewport.width}px`;
     canvas.style.height = `${viewport.height}px`;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    const simulationOffset = production.simulationTime - Date.now();
     let frame = 0;
     const draw = () => {
-      const now = Date.now() + simulationOffset;
+      const now =
+        production.simulationTime +
+        (Date.now() - snapshotWallTimeRef.current) * speedRef.current;
       drawLogistics(ctx, world, camera, viewport, production, now, scene);
       const moving = production.logistics.shipments.some(
         (shipment) =>
@@ -254,24 +303,46 @@ export default function WorldMap({
     };
     draw();
     return () => window.cancelAnimationFrame(frame);
-  }, [world, camera, viewport, production, scene]);
+  }, [world, camera, viewport, production, scene, simulationSpeed]);
 
   useEffect(() => {
-    const startTime = Date.now();
-    const simulation = new LocalGameSimulation(initialWorld, startTime);
+    speedRef.current = simulationSpeed;
+    lastWallTimeRef.current = Date.now();
+    snapshotWallTimeRef.current = Date.now();
+  }, [simulationSpeed]);
+
+  useEffect(() => {
+    let simulation: LocalGameSimulation;
+    let recoveryMessage: string | null = null;
+    const saved = window.localStorage.getItem(localSaveKey);
+    try {
+      simulation = saved
+        ? LocalGameSimulation.fromSave(JSON.parse(saved) as unknown)
+        : new LocalGameSimulation(initialWorld, Date.now());
+    } catch {
+      window.localStorage.removeItem(localSaveKey);
+      simulation = new LocalGameSimulation(initialWorld, Date.now());
+      recoveryMessage =
+        "The previous local save was invalid, so a new settlement was started.";
+    }
     simulationRef.current = simulation;
-    simulationTimeRef.current = startTime;
+    simulationTimeRef.current = simulation.exportSave().simulationTime;
+    lastWallTimeRef.current = Date.now();
     const refresh = () => {
-      simulationTimeRef.current = Date.now();
-      applyReadModel(simulation.read(simulationTimeRef.current));
+      applyReadModel(simulation.read(currentSimulationTime()));
+      persistSimulation(simulation);
     };
     refresh();
+    const notificationTimer = recoveryMessage
+      ? window.setTimeout(() => setBuildMessage(recoveryMessage), 0)
+      : 0;
     const timer = window.setInterval(refresh, 1_000);
     return () => {
       window.clearInterval(timer);
+      if (notificationTimer) window.clearTimeout(notificationTimer);
       if (simulationRef.current === simulation) simulationRef.current = null;
     };
-  }, [initialWorld, applyReadModel]);
+  }, [initialWorld, applyReadModel, currentSimulationTime, persistSimulation]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -315,6 +386,30 @@ export default function WorldMap({
       (current) =>
         rotations[(rotations.indexOf(current) + 1) % rotations.length],
     );
+  const focusBuildSite = () => {
+    const candidate = world.cells.find((cell) =>
+      validatePlacement(world, {
+        type: buildingType,
+        x: cell.x,
+        y: cell.y,
+        rotation,
+      }).valid,
+    );
+    if (!candidate) {
+      setBuildMessage(
+        `No valid ${buildingDefinitions[buildingType].name} site is currently connected to a road.`,
+      );
+      return;
+    }
+    setSelected(candidate);
+    setHovered(candidate);
+    setCamera((current) => ({
+      ...current,
+      focus: focusCell(candidate),
+      zoom: Math.max(current.zoom, 1.6),
+    }));
+    setBuildMessage("A valid physical site is selected. Review affordability, then click the footprint to build.");
+  };
   const updateProduction = (
     site: ProductionSite,
     action: "set_workers" | "collect",
@@ -336,9 +431,10 @@ export default function WorldMap({
               buildingId: site.buildingId,
               workers: workers as number,
             },
-        simulationTimeRef.current,
+        currentSimulationTime(),
       );
       applyReadModel(result.readModel);
+      persistSimulation(simulation);
       if (!result.ok) throw new Error(result.error);
       setProductionMessage(
         action === "collect"
@@ -371,9 +467,10 @@ export default function WorldMap({
           quantity,
           expectedPriceCents,
         },
-        simulationTimeRef.current,
+        currentSimulationTime(),
       );
       applyReadModel(result.readModel);
+      persistSimulation(simulation);
       if (!result.ok) throw new Error(result.error);
       setMarketMessage(
         `${quantity} ${commodity} sold for ${money(result.revenueCents ?? 0)}.`,
@@ -423,9 +520,10 @@ export default function WorldMap({
           expectedRevision: revision,
           placement: request,
         },
-        simulationTimeRef.current,
+        currentSimulationTime(),
       );
       applyReadModel(result.readModel);
+      persistSimulation(simulation);
       if (!result.ok || !result.building) {
         setBuildMessage(
           result.ok ? "Construction could not be completed." : result.error,
@@ -439,11 +537,36 @@ export default function WorldMap({
       );
       setHovered(null);
       setBuildMessage(
-        `${buildingDefinitions[result.building.type].name} constructed.`,
+        `${buildingDefinitions[result.building.type].name} constructed. −${money(result.constructionCost?.cashCents ?? 0)}${result.constructionCost && materialSummary(result.constructionCost.materials) ? ` · −${materialSummary(result.constructionCost.materials)}` : ""}`,
       );
     } catch (error) {
       setBuildMessage(
         error instanceof Error ? error.message : "Construction command failed.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  const demolishBuilding = (buildingId: string) => {
+    if (submitting) return;
+    setSubmitting(true);
+    setBuildMessage("Validating demolition command…");
+    try {
+      const simulation = simulationRef.current;
+      if (!simulation) throw new Error("Local simulation is starting.");
+      const result = simulation.execute(
+        { type: "demolish", buildingId },
+        currentSimulationTime(),
+      );
+      applyReadModel(result.readModel);
+      persistSimulation(simulation);
+      if (!result.ok) throw new Error(result.error);
+      setSelected(null);
+      setProductionMessage(null);
+      setBuildMessage("Building demolished. Its workers and capacity were released.");
+    } catch (error) {
+      setBuildMessage(
+        error instanceof Error ? error.message : "Demolition command failed.",
       );
     } finally {
       setSubmitting(false);
@@ -456,8 +579,7 @@ export default function WorldMap({
     ? production?.sites.find((site) => site.buildingId === selectedBuilding.id)
     : undefined;
   const selectedWarehouseInventory =
-    production &&
-    selectedBuilding?.id === production.logistics.warehouseBuildingId
+    production && selectedBuilding?.type === "warehouse"
       ? production.logistics.warehouseInventory
       : undefined;
   const selectedResource = selected ? resourceAt(world, selected) : undefined;
@@ -473,14 +595,27 @@ export default function WorldMap({
     point: toScreen({ ...node.anchor, z: node.anchor.z + 2 }, camera, viewport),
   }));
   const chunk = selected ? chunkOf(selected, world.chunkSize) : null;
-  const selectedPlacement = selected
-    ? validatePlacement(world, {
-        type: buildingType,
-        x: selected.x,
-        y: selected.y,
-        rotation,
-      })
-    : null;
+  const selectedPlacement = (() => {
+    if (!selected) return null;
+    const physical = validatePlacement(world, {
+      type: buildingType,
+      x: selected.x,
+      y: selected.y,
+      rotation,
+    });
+    const economic = production
+      ? validateConstructionResources(
+          buildingType,
+          production.market.cashCents,
+          production.logistics.warehouseInventory,
+        )
+      : { affordable: false, reasons: ["Simulation is starting"] };
+    return {
+      ...physical,
+      valid: physical.valid && economic.affordable,
+      reasons: [...physical.reasons, ...economic.reasons],
+    };
+  })();
 
   return (
     <main className="flex min-h-dvh flex-col md:h-dvh md:min-h-[600px] md:overflow-hidden bg-[#101f25] font-sans text-slate-100">
@@ -497,7 +632,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestones 0–12
+              Prototype / Milestones 0–13
             </p>
           </div>
         </div>
@@ -536,6 +671,21 @@ export default function WorldMap({
             Company
           </button>
         </nav>
+        <div
+          className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/10 p-1"
+          aria-label="Simulation speed"
+        >
+          {simulationSpeeds.map((speed) => (
+            <button
+              key={speed}
+              aria-pressed={simulationSpeed === speed}
+              className={`rounded-md px-2 py-1 text-xs ${simulationSpeed === speed ? "bg-amber-300 text-slate-950" : "text-slate-300 hover:bg-white/10"}`}
+              onClick={() => setSimulationSpeed(speed)}
+            >
+              {speed === 0 ? "Pause" : `${speed}×`}
+            </button>
+          ))}
+        </div>
         <span className="rounded-full border border-emerald-300/20 bg-emerald-300/5 px-3 py-1.5 text-xs text-emerald-200">
           {production
             ? new Date(production.simulationTime).toLocaleTimeString([], {
@@ -1238,19 +1388,59 @@ export default function WorldMap({
             </div>
             {tool === "build" && (
               <div className="mt-4 space-y-3">
-                <div className="grid grid-cols-3 gap-2">
-                  {constructibleBuildingTypes.map((type) => (
-                    <button
-                      key={type}
-                      className={`${button} px-2 ${buildingType === type ? "border-amber-200/60 bg-amber-200/10 text-amber-100" : ""}`}
-                      onClick={() => {
-                        setBuildingType(type);
-                        setBuildMessage(null);
-                      }}
-                    >
-                      {buildingDefinitions[type].name}
-                    </button>
-                  ))}
+                <div className="grid gap-2">
+                  {constructibleBuildingTypes.map((type) => {
+                    const cost = constructionCosts[type];
+                    const affordability = production
+                      ? validateConstructionResources(
+                          type,
+                          production.market.cashCents,
+                          production.logistics.warehouseInventory,
+                        )
+                      : null;
+                    const footprint = footprintOf(type, rotation);
+                    return (
+                      <button
+                        key={type}
+                        className={`${button} px-3 text-left ${buildingType === type ? "border-amber-200/60 bg-amber-200/10 text-amber-100" : ""}`}
+                        onClick={() => {
+                          setBuildingType(type);
+                          setBuildMessage(null);
+                        }}
+                      >
+                        <span className="flex items-center justify-between gap-3">
+                          <span className="font-semibold">
+                            {buildingDefinitions[type].name}
+                          </span>
+                          <span
+                            className={`text-[10px] ${affordability?.affordable ? "text-emerald-300" : "text-red-300"}`}
+                          >
+                            {affordability?.affordable
+                              ? "Affordable"
+                              : "Unavailable"}
+                          </span>
+                        </span>
+                        <span className="mt-1 block text-[10px] leading-4 text-slate-400">
+                          {money(cost.cashCents)}
+                          {materialSummary(cost.materials)
+                            ? ` · ${materialSummary(cost.materials)}`
+                            : ""}
+                          {` · ${footprint.width}×${footprint.depth}`}
+                        </span>
+                        <span className="mt-1 block text-[10px] leading-4 text-slate-300">
+                          {buildingDefinitions[type].purpose}
+                          {isProducerType(type)
+                            ? ` Produces ${productionRecipes[type].output}; ${productionRecipes[type].requiredWorkers} workers required.`
+                            : ""}
+                        </span>
+                        {affordability && !affordability.affordable && (
+                          <span className="mt-1 block text-[10px] text-red-200">
+                            {affordability.reasons.join(" · ")}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-xs text-slate-400">
@@ -1259,13 +1449,20 @@ export default function WorldMap({
                       {rotation}
                     </span>
                   </span>
-                  <button className={button} onClick={rotatePreview}>
-                    Rotate (R)
-                  </button>
+                  <div className="flex gap-2">
+                    <button className={button} onClick={focusBuildSite}>
+                      Find site
+                    </button>
+                    <button className={button} onClick={rotatePreview}>
+                      Rotate (R)
+                    </button>
+                  </div>
                 </div>
                 <p className="text-xs leading-5 text-slate-400">
                   Move over the map for a footprint preview, then click to
-                  construct. Buildings require level grassland beside a road.
+                  construct. Farms require farmland, Lumber Camps require
+                  forest, Quarries require stone, and every building requires
+                  level ground beside a connected road.
                 </p>
                 {placement && (
                   <div
@@ -1277,12 +1474,12 @@ export default function WorldMap({
                       : placement.validation.reasons.join(" · ")}
                   </div>
                 )}
-                {buildMessage && (
-                  <p className="text-xs text-amber-100" aria-live="polite">
-                    {buildMessage}
-                  </p>
-                )}
               </div>
+            )}
+            {buildMessage && (
+              <p className="mt-3 text-xs text-amber-100" aria-live="polite">
+                {buildMessage}
+              </p>
             )}
           </section>
           <p className="text-[10px] uppercase tracking-[0.2em] text-slate-400">
@@ -1298,20 +1495,29 @@ export default function WorldMap({
                   : "Explore the world"}
           </h2>
           {selectedBuilding && (
-            <p className="mt-2 text-xs leading-5 text-slate-400">
-              {buildingDefinitions[selectedBuilding.type].purpose} Footprint:{" "}
-              {
-                footprintOf(selectedBuilding.type, selectedBuilding.rotation)
-                  .width
-              }{" "}
-              ×{" "}
-              {
-                footprintOf(selectedBuilding.type, selectedBuilding.rotation)
-                  .depth
-              }
-              . Rotation: {selectedBuilding.rotation}. Settlement:{" "}
-              {world.settlement?.name}.
-            </p>
+            <>
+              <p className="mt-2 text-xs leading-5 text-slate-400">
+                {buildingDefinitions[selectedBuilding.type].purpose} Footprint:{" "}
+                {
+                  footprintOf(selectedBuilding.type, selectedBuilding.rotation)
+                    .width
+                }{" "}
+                ×{" "}
+                {
+                  footprintOf(selectedBuilding.type, selectedBuilding.rotation)
+                    .depth
+                }
+                . Rotation: {selectedBuilding.rotation}. Settlement:{" "}
+                {world.settlement?.name}.
+              </p>
+              <button
+                className={`${button} mt-3 w-full border-red-300/30 text-red-100`}
+                disabled={submitting || selectedBuilding.type === "camp"}
+                onClick={() => demolishBuilding(selectedBuilding.id)}
+              >
+                Demolish building
+              </button>
+            </>
           )}
           {selected && !selectedBuilding && selectedPlacement && (
             <div className="mt-3 rounded-lg border border-white/10 p-3 text-xs">
@@ -1343,13 +1549,7 @@ export default function WorldMap({
               <button
                 className={`${button} mt-3 w-full`}
                 disabled={!selectedPlacement.valid}
-                onClick={() => {
-                  setTool("build");
-                  setHovered(selected);
-                  setBuildMessage(
-                    "Preview ready. Click the selected footprint to construct.",
-                  );
-                }}
+                onClick={() => confirmPlacement(selected)}
               >
                 Build here
               </button>
@@ -1416,6 +1616,17 @@ export default function WorldMap({
                   + Worker
                 </button>
               </div>
+              <button
+                className={`${button} mt-2 w-full`}
+                disabled={
+                  productionBusy || selectedProduction.assignedWorkers === 0
+                }
+                onClick={() =>
+                  void updateProduction(selectedProduction, "set_workers", 0)
+                }
+              >
+                Pause production · release workers
+              </button>
               <div className="mt-4 flex items-center justify-between text-xs">
                 <span className="text-slate-400">Output</span>
                 <span>
@@ -1611,9 +1822,9 @@ export default function WorldMap({
             <p>Enter to inspect the center · Esc to clear</p>
           </div>
           <p className="mt-7 text-[11px] leading-5 text-slate-500">
-            Construction, production, shipment timing, and warehouse arrivals
-            are authoritative for this local simulation. Costs,
-            persistence, authentication, and population growth arrive later.
+            Construction costs, production, demolition, shipment timing,
+            warehouse arrivals, and saved progress are authoritative for this
+            local simulation. Population growth arrives later.
           </p>
         </aside>
       </div>
