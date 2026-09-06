@@ -1,4 +1,5 @@
 import type { Building, Settlement } from "./settlement";
+import type { LogisticsRoute } from "./logistics";
 export type WorldPosition = Readonly<{ x: number; y: number; z: number }>;
 export type TerrainType = "grassland" | "water" | "mountain" | "forest_ground" | "farmland";
 export type ResourceType = "forest" | "stone" | "iron";
@@ -11,7 +12,7 @@ export type ResourceNode = Readonly<{
   cellCount: number;
   estimatedReserve: number;
 }>;
-export type WorldSnapshot = Readonly<{ seed: string; size: number; chunkSize: number; cells: readonly SurfaceCell[]; resourceNodes: readonly ResourceNode[]; settlement?: Settlement; buildings?: readonly Building[]; roads?: readonly WorldPosition[] }>;
+export type WorldSnapshot = Readonly<{ seed: string; size: number; chunkSize: number; cells: readonly SurfaceCell[]; resourceNodes: readonly ResourceNode[]; settlement?: Settlement; buildings?: readonly Building[]; roads?: readonly WorldPosition[]; logisticsRoutes?: readonly LogisticsRoute[] }>;
 
 // Semantic world data; never browser objects or visual coordinates.
 export function generateWorld(seed = "prototype-001", size = 128): WorldSnapshot {

@@ -1,19 +1,33 @@
 import { withStartingProduction, advanceProduction, describeProduction, isProducerType, productionRecipes, type ProductionSnapshot, type ProductionState } from "../domain/production";
+import { withStartingLogistics, type Shipment, type WarehouseInventory } from "../domain/logistics";
 import { withStartingSettlement, type Building } from "../domain/settlement";
 import { generateWorld } from "../domain/world";
 
-type ProductionSession = { states: Map<string, ProductionState> };
+type ProductionSession = { states: Map<string, ProductionState>; shipments: Shipment[]; inventory: Record<keyof WarehouseInventory, number>; nextShipment: number };
 const sessions = new Map<string, ProductionSession>();
-const scenario = withStartingProduction(withStartingSettlement(generateWorld()));
+const scenario = withStartingLogistics(withStartingProduction(withStartingSettlement(generateWorld())));
 const producers = (scenario.buildings ?? []).filter((building): building is Building & { type: "farm" | "lumber_camp" | "quarry" } => isProducerType(building.type));
+const warehouse = scenario.buildings?.find(building => building.type === "warehouse");
 
 function createSession(now: number): ProductionSession {
+  const farm = producers.find(building => building.type === "farm");
+  const demonstrationRoute = scenario.logisticsRoutes?.find(route => route.originBuildingId === farm?.id);
+  const shipments: Shipment[] = farm && warehouse && demonstrationRoute ? [{
+    id: "shipment-1",
+    routeId: demonstrationRoute.id,
+    originBuildingId: farm.id,
+    destinationBuildingId: warehouse.id,
+    cargo: { commodity: "food", quantity: productionRecipes.farm.outputAmount },
+    departureTime: now,
+    arrivalTime: now + demonstrationRoute.durationMs,
+    status: "in_transit",
+  }] : [];
   return { states: new Map(producers.map(building => {
     const recipe = productionRecipes[building.type];
     const assignedWorkers = building.type === "lumber_camp" ? 0 : recipe.requiredWorkers;
     const stored = building.type === "quarry" ? recipe.storageCapacity : 0;
     return [building.id, { buildingId: building.id, assignedWorkers, stored, progressMs: 0, updatedAt: now }];
-  })) };
+  })), shipments, inventory: { food: 8, wood: 3, stone: 0 }, nextShipment: shipments.length + 1 };
 }
 
 function getSession(sessionId: string, now: number) {
@@ -27,6 +41,11 @@ function advanceSession(session: ProductionSession, now: number) {
     const state = session.states.get(building.id);
     if (state) session.states.set(building.id, advanceProduction(state, building.type, now));
   }
+  session.shipments = session.shipments.map(shipment => {
+    if (shipment.status === "arrived" || shipment.arrivalTime > now) return shipment;
+    session.inventory[shipment.cargo.commodity] += shipment.cargo.quantity;
+    return { ...shipment, status: "arrived", arrivedAt: shipment.arrivalTime };
+  });
 }
 
 function toSnapshot(session: ProductionSession, now: number): ProductionSnapshot {
@@ -37,7 +56,19 @@ function toSnapshot(session: ProductionSession, now: number): ProductionSnapshot
   });
   const population = scenario.settlement?.population ?? 0;
   const assignedWorkers = sites.reduce((total, site) => total + site.assignedWorkers, 0);
-  return { serverTime: now, population, assignedWorkers, availableWorkers: population - assignedWorkers, sites };
+  return {
+    serverTime: now,
+    population,
+    assignedWorkers,
+    availableWorkers: population - assignedWorkers,
+    sites,
+    logistics: {
+      routes: scenario.logisticsRoutes ?? [],
+      shipments: session.shipments,
+      warehouseBuildingId: warehouse?.id ?? "",
+      warehouseInventory: { ...session.inventory },
+    },
+  };
 }
 
 export function productionForSession(sessionId: string, now = Date.now()) {
@@ -69,9 +100,24 @@ export function collectProduction(sessionId: string, buildingId: string, now = D
   advanceSession(session, now);
   const state = session.states.get(buildingId);
   if (!state) return { ok: false as const, status: 404, error: "Production site was not found." };
+  if (state.stored === 0) return { ok: false as const, status: 422, error: "This production site has no output to ship." };
+  const building = producers.find(candidate => candidate.id === buildingId);
+  const route = scenario.logisticsRoutes?.find(candidate => candidate.originBuildingId === buildingId);
+  if (!building || !route || !warehouse) return { ok: false as const, status: 422, error: "This production site has no road connection to the warehouse." };
   const collected = state.stored;
   session.states.set(buildingId, { ...state, stored: 0, progressMs: 0, updatedAt: now });
-  return { ok: true as const, status: 200, collected, snapshot: toSnapshot(session, now) };
+  const shipment: Shipment = {
+    id: `shipment-${session.nextShipment++}`,
+    routeId: route.id,
+    originBuildingId: buildingId,
+    destinationBuildingId: warehouse.id,
+    cargo: { commodity: productionRecipes[building.type].output, quantity: collected },
+    departureTime: now,
+    arrivalTime: now + route.durationMs,
+    status: "in_transit",
+  };
+  session.shipments.push(shipment);
+  return { ok: true as const, status: 200, collected, shipment, snapshot: toSnapshot(session, now) };
 }
 
 export function clearProductionSessionsForTests() {

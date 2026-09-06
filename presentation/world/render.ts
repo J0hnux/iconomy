@@ -3,6 +3,7 @@ import type { PlacementRequest, PlacementValidation } from "../../world/domain/c
 import { buildingFaces, buildingsByDepth, buildingVisuals } from "./buildings";
 import type { SurfaceCell, WorldSnapshot } from "../../world/domain/world";
 import type { ProductionSnapshot } from "../../world/domain/production";
+import { shipmentPosition } from "../../world/domain/logistics";
 import { orderedCells, terrainFaces, toScreen, TILE_WIDTH, TILE_HEIGHT, ELEVATION_HEIGHT, type Camera, type Viewport } from "./projection";
 
 const grass = ["#668568", "#6c8b6d", "#718e6c", "#68866a", "#748f70"];
@@ -128,4 +129,44 @@ export function drawWorld(ctx: CanvasRenderingContext2D, world: WorldSnapshot, c
       }
     }
   }
+}
+
+export function drawLogistics(ctx: CanvasRenderingContext2D, world: WorldSnapshot, camera: Camera, viewport: Viewport, production: ProductionSnapshot, now: number) {
+  ctx.clearRect(0, 0, viewport.width, viewport.height);
+  ctx.save();
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  for (const route of production.logistics.routes) {
+    if (route.path.length < 2) continue;
+    ctx.beginPath();
+    route.path.forEach((position, index) => {
+      const point = toScreen({ x: position.x + 0.5, y: position.y + 0.5, z: position.z + 0.08 }, camera, viewport);
+      if (index === 0) ctx.moveTo(point.x, point.y); else ctx.lineTo(point.x, point.y);
+    });
+    ctx.setLineDash([Math.max(2, 4 * camera.zoom), Math.max(3, 6 * camera.zoom)]);
+    ctx.strokeStyle = "#9fd8e855";
+    ctx.lineWidth = Math.max(1, 1.5 * camera.zoom);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  for (const shipment of production.logistics.shipments) {
+    const route = production.logistics.routes.find(candidate => candidate.id === shipment.routeId);
+    if (!route) continue;
+    if (shipment.status === "in_transit") {
+      const position = shipmentPosition(route, shipment, now);
+      const point = toScreen({ x: position.x + 0.5, y: position.y + 0.5, z: position.z + 0.35 }, camera, viewport);
+      const size = Math.max(4, 6 * camera.zoom);
+      ctx.fillStyle = shipment.cargo.commodity === "food" ? "#fde047" : shipment.cargo.commodity === "wood" ? "#d6a56d" : "#d1d5db";
+      ctx.fillRect(point.x - size / 2, point.y - size / 2, size, size);
+      ctx.strokeStyle = "#102128"; ctx.lineWidth = Math.max(1, camera.zoom); ctx.strokeRect(point.x - size / 2, point.y - size / 2, size, size);
+    } else if (shipment.arrivedAt && now - shipment.arrivedAt < 5_000) {
+      const destination = route.path.at(-1);
+      if (!destination) continue;
+      const point = toScreen({ x: destination.x + 0.5, y: destination.y + 0.5, z: destination.z + 0.2 }, camera, viewport);
+      const age = Math.max(0, now - shipment.arrivedAt) / 5_000;
+      ctx.beginPath(); ctx.arc(point.x, point.y, Math.max(7, (8 + age * 14) * camera.zoom), 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(74, 222, 128, ${1 - age})`; ctx.lineWidth = Math.max(1.5, 2 * camera.zoom); ctx.stroke();
+    }
+  }
+  ctx.restore();
 }

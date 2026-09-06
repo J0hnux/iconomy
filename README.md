@@ -69,11 +69,23 @@ The automated tests include footprint validity, unchanged terrain, road connecti
 - Every recipe declares its commodity, batch size, cycle duration, worker requirement, and local storage capacity. The Farm produces 4 food every 8 seconds, the Lumber Camp produces 3 wood every 10 seconds, and the Quarry produces 2 stone every 12 seconds.
 - Production advances from elapsed server time through `GET /api/production`; Canvas rendering only displays snapshots returned by the server. Closing or slowing the browser does not turn frame rate into economic progress.
 - The production overview shows assigned and available citizens, stored output, and a clear Running, Missing workers, or Storage full state. Map badges use the same status and show server progress for active sites.
-- Selecting a producer opens worker controls, output and cycle details, a progress bar, storage usage, and the exact reason an idle site cannot run. Collecting output clears local storage and lets a staffed site resume.
+- Selecting a producer opens worker controls, output and cycle details, a progress bar, storage usage, and the exact reason an idle site cannot run. Dispatching output clears local storage and lets a staffed site resume.
 - The initial scenario demonstrates all three states: the Farm is running, the Lumber Camp needs two workers, and the Quarry is full. Worker changes and collection use server-validated `PATCH /api/production` commands.
-- Prototype production state lives in server-process memory and resets when the server restarts. Collected goods are reported by the command but a shared inventory, input recipes, costs, persistence, authenticated ownership, and logistics remain future work. Authentication must use NextAuth when introduced.
+- Prototype production state lives in server-process memory and resets when the server restarts. Input recipes, costs, persistence, and authenticated ownership remain future work. Milestone 6 carries dispatched output into warehouse inventory. Authentication must use NextAuth when introduced.
 
 `world/domain/production.ts` owns recipes, site placement, status explanations, and elapsed-time advancement. `world/server/production-store.ts` owns session state and population checks, while `app/api/production/route.ts` exposes snapshots and commands.
+
+## Milestone 6: logistics
+
+- Harvest Road, Northwood Road, and Ridge Road connect the three producers to Novagrad's existing street network. Routes use contiguous logical world cells, merge into the visible road layer, avoid building footprints, and preserve the underlying terrain and elevation.
+- Dispatching stored output creates an authoritative shipment with an origin, warehouse destination, cargo, departure time, arrival time, route, and status. Goods remain in transit until server time reaches the scheduled arrival.
+- A dedicated presentation canvas draws dashed route overlays and moving cargo markers from shipment timestamps. Marker movement never controls delivery; a late or hidden browser receives the same authoritative result on its next server snapshot.
+- A server-confirmed arrival adds cargo to the Novagrad warehouse inventory and produces a short arrival ring at the destination. The logistics panel lists recent shipments, their routes, cargo, and In transit or Arrived state.
+- The warehouse inspector exposes spatial inventory for food, wood, and stone. Collecting at a producer now means dispatching goods rather than moving them into a global inventory immediately.
+- A demonstration food shipment starts in transit so the logistics layer is visible immediately. Further Farm, Lumber Camp, and Quarry shipments use their route's distance-based travel duration.
+- Logistics state remains in server-process memory for this prototype. Vehicle capacity, congestion, transport costs, persistent inventory, route construction tools, and multiplayer synchronization remain future work.
+
+`world/domain/logistics.ts` owns road connections, deterministic route generation, shipment types, and route interpolation. The production session store owns shipment departures, authoritative arrivals, and warehouse inventory transitions. Canvas animation consumes those snapshots without changing them.
 
 ## Run and verify
 
@@ -91,12 +103,14 @@ For construction, choose Build, select a building, and move beside a road. Confi
 
 For production, open each site from the Production panel. Confirm the Farm advances, the Lumber Camp explains that it needs two workers, and the Quarry explains that its storage is full. Add two Lumber Camp workers and watch its server-reported progress increase. Collect the Quarry output and confirm it changes to Running.
 
+For logistics, watch the initial food marker travel along Harvest Road and confirm the logistics panel changes it from In transit to Arrived. Dispatch the Quarry's stone, verify its local storage clears while warehouse stone remains unchanged, then confirm the warehouse gains 12 stone only after the Ridge Road arrival. Select the Warehouse to inspect its spatial inventory.
+
 ## Architecture and scope
 
 `world/domain/world.ts` generates a serializable, read-only semantic snapshot on the server page. Logical cells never contain screen positions or renderer objects. Chunks are currently derived addresses, not streamed storage.
 
 `presentation/world/projection.ts` owns coordinate transforms, bounded camera operations, and elevated terrain face picking. `render.ts` maps semantic terrain to shaded Canvas top and cliff polygons. `world-map.tsx` owns presentation-only camera, selection, and UI state. Rendering runs when those inputs change rather than in a perpetual simulation loop.
 
-The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry and depth ordering remain presentation responsibilities. Picking scans cells in reverse painter order with a bounds check; chunk-level acceleration is deferred until profiling justifies it. Construction and production cross server validation boundaries, while persistence, multiplayer, authentication, money, shared inventory, and ownership remain unimplemented.
+The world can later feed another renderer without changing its coordinates. Elevation is stored in domain coordinates; face geometry and depth ordering remain presentation responsibilities. Picking scans cells in reverse painter order with a bounds check; chunk-level acceleration is deferred until profiling justifies it. Construction, production, shipments, and warehouse arrivals cross server validation boundaries, while persistence, multiplayer, authentication, money, markets, and ownership remain unimplemented.
 
 The blueprint and reference image describe the long-term destination, not the current art target.

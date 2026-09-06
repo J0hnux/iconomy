@@ -255,7 +255,7 @@ test('production advances from elapsed server time and explains idle states', ()
   assert.equal(lumber.status, 'missing_workers');
   assert.match(lumber.statusReason, /Needs 2 more workers/);
   assert.equal(quarry.status, 'storage_full');
-  assert.match(quarry.statusReason, /Collect stone/);
+  assert.match(quarry.statusReason, /Dispatch stone/);
   const advanced = productionForSession('production-test', 9_000);
   assert.equal(advanced.sites.find(site => site.type === 'farm').stored, 4);
   assert.equal(advanced.sites.find(site => site.type === 'lumber_camp').progressMs, 0);
@@ -266,6 +266,44 @@ test('production advances from elapsed server time and explains idle states', ()
   const collected = collectProduction('production-test', quarry.buildingId, 19_000);
   assert.equal(collected.ok, true);
   assert.equal(collected.collected, 12);
+  assert.equal(collected.shipment.status, 'in_transit');
+  assert.equal(collected.snapshot.logistics.warehouseInventory.stone, 0);
   assert.equal(collected.snapshot.sites.find(site => site.type === 'quarry').status, 'running');
+  const delivered = productionForSession('production-test', collected.shipment.arrivalTime);
+  assert.equal(delivered.logistics.warehouseInventory.stone, 12);
+  assert.equal(delivered.logistics.shipments.find(shipment => shipment.id === collected.shipment.id).status, 'arrived');
   assert.equal(setProductionWorkers('production-test', farm.buildingId, 99, 19_000).status, 422);
+});
+
+test('logistics routes connect each producer to the settlement road network', () => {
+  const { withStartingSettlement, buildingAt, footprintOf } = require('../world/domain/settlement.ts');
+  const { withStartingProduction } = require('../world/domain/production.ts');
+  const { roadConnections, shipmentPosition, withStartingLogistics } = require('../world/domain/logistics.ts');
+  const settled = withStartingSettlement(world);
+  const initialRoads = new Set(settled.roads.map(road => `${road.x},${road.y}`));
+  const routed = withStartingLogistics(withStartingProduction(settled));
+  assert.equal(routed.logisticsRoutes.length, 3);
+  const roadKeys = new Set(routed.roads.map(road => `${road.x},${road.y}`));
+  for (const route of routed.logisticsRoutes) {
+    const origin = routed.buildings.find(building => building.id === route.originBuildingId);
+    const destination = routed.buildings.find(building => building.id === route.destinationBuildingId);
+    assert.equal(destination.type, 'warehouse');
+    assert.ok(route.durationMs >= 6_000);
+    assert.ok(initialRoads.has(`${route.path.at(-1).x},${route.path.at(-1).y}`));
+    assert.ok(route.path.every(cell => roadKeys.has(`${cell.x},${cell.y}`)));
+    assert.ok(route.path.every(cell => !buildingAt(routed, cell.x, cell.y)));
+    const footprint = footprintOf(origin.type, origin.rotation);
+    const start = route.path[0];
+    const besideOrigin = start.x >= origin.x - 1 && start.x <= origin.x + footprint.width && start.y >= origin.y - 1 && start.y <= origin.y + footprint.depth;
+    assert.equal(besideOrigin, true);
+    for (let index = 1; index < route.path.length; index++) {
+      const previous = route.path[index - 1], current = route.path[index];
+      assert.equal(Math.abs(previous.x - current.x) + Math.abs(previous.y - current.y), 1);
+    }
+    assert.ok(Object.values(roadConnections(routed, route.path[Math.floor(route.path.length / 2)])).some(Boolean));
+    const shipment = { departureTime: 100, arrivalTime: 1_100 };
+    assert.deepEqual(shipmentPosition(route, shipment, 100), (({ x, y, z }) => ({ x, y, z }))(route.path[0]));
+    assert.deepEqual(shipmentPosition(route, shipment, 1_100), (({ x, y, z }) => ({ x, y, z }))(route.path.at(-1)));
+  }
+  assert.deepEqual(withStartingLogistics(withStartingProduction(settled)), routed);
 });

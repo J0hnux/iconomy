@@ -3,7 +3,7 @@ import type { WorldPosition, WorldSnapshot } from "./world";
 export const buildingDefinitions = {
   camp: { name: "Settler Camp", width: 2, depth: 2, purpose: "Administrative anchor for the starting settlement." },
   house: { name: "House", width: 1, depth: 1, purpose: "Housing for the founding citizens." },
-  warehouse: { name: "Warehouse", width: 2, depth: 2, purpose: "Local storage site. Inventory and production arrive later." },
+  warehouse: { name: "Warehouse", width: 2, depth: 2, purpose: "Receives and stores goods delivered through Novagrad's road network." },
   workshop: { name: "Workshop", width: 2, depth: 1, purpose: "A small production site. Recipes and workers arrive later." },
   farm: { name: "Farm", width: 2, depth: 2, purpose: "Turns cultivated farmland into food for Novagrad." },
   lumber_camp: { name: "Lumber Camp", width: 2, depth: 2, purpose: "Harvests timber from a managed forest site." },

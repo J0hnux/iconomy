@@ -6,7 +6,7 @@ import { buildingAt, buildingDefinitions, footprintOf, type BuildingRotation, ty
 import type { ProductionSnapshot, ProductionSite } from "@/world/domain/production";
 import { chunkOf, resourceAt, type SurfaceCell, type TerrainType, type WorldSnapshot } from "@/world/domain/world";
 import { toScreen, focusCell, panCamera, pickCell, zoomCamera, type Camera, type Viewport } from "./projection";
-import { drawWorld, type PlacementPreview } from "./render";
+import { drawLogistics, drawWorld, type PlacementPreview } from "./render";
 
 const button = "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-amber-200 disabled:opacity-30";
 
@@ -21,6 +21,7 @@ const terrainNames: Record<TerrainType, string> = {
 
 export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const logisticsCanvasRef = useRef<HTMLCanvasElement>(null);
   const [world, setWorld] = useState(initialWorld);
   const [camera, setCamera] = useState<Camera>({ focus: world.settlement ? focusCell(world.settlement.anchor) : { x: world.size / 2, y: world.size / 2 }, zoom: world.settlement ? 2 : 1 });
   const [viewport, setViewport] = useState<Viewport>({ width: 1, height: 1 });
@@ -71,6 +72,28 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
   }, [world, camera, viewport, selected, grid, placement, production]);
 
   useEffect(() => {
+    const canvas = logisticsCanvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx || !production) return;
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = Math.round(viewport.width * ratio);
+    canvas.height = Math.round(viewport.height * ratio);
+    canvas.style.width = `${viewport.width}px`;
+    canvas.style.height = `${viewport.height}px`;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    const serverOffset = production.serverTime - Date.now();
+    let frame = 0;
+    const draw = () => {
+      const now = Date.now() + serverOffset;
+      drawLogistics(ctx, world, camera, viewport, production, now);
+      const moving = production.logistics.shipments.some(shipment => shipment.status === "in_transit" || (shipment.arrivedAt !== undefined && now - shipment.arrivedAt < 5_000));
+      if (moving) frame = window.requestAnimationFrame(draw);
+    };
+    draw();
+    return () => window.cancelAnimationFrame(frame);
+  }, [world, camera, viewport, production]);
+
+  useEffect(() => {
     sessionId.current ??= crypto.randomUUID();
     let cancelled = false;
     const refresh = async () => {
@@ -114,10 +137,10 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: sessionId.current, buildingId: site.buildingId, action, ...(workers === undefined ? {} : { workers }) }),
       });
-      const result = await response.json() as { snapshot?: ProductionSnapshot; collected?: number; error?: string };
+      const result = await response.json() as { snapshot?: ProductionSnapshot; collected?: number; shipment?: { arrivalTime: number }; error?: string };
       if (!response.ok || !result.snapshot) throw new Error(result.error ?? "Production command was rejected.");
       setProduction(result.snapshot);
-      setProductionMessage(action === "collect" ? `${result.collected ?? 0} ${site.output} collected.` : "Worker assignment updated.");
+      setProductionMessage(action === "collect" ? `${result.collected ?? 0} ${site.output} dispatched to the warehouse.` : "Worker assignment updated.");
     } catch (error) {
       setProductionMessage(error instanceof Error ? error.message : "Production command failed.");
     } finally {
@@ -161,6 +184,7 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
   };
   const selectedBuilding = selected ? buildingAt(world, selected.x, selected.y) : undefined;
   const selectedProduction = selectedBuilding ? production?.sites.find(site => site.buildingId === selectedBuilding.id) : undefined;
+  const selectedWarehouseInventory = production && selectedBuilding?.id === production.logistics.warehouseBuildingId ? production.logistics.warehouseInventory : undefined;
   const selectedResource = selected ? resourceAt(world, selected) : undefined;
   const cityLabel = world.settlement ? toScreen({ ...world.settlement.anchor, z: world.settlement.anchor.z + 4 }, camera, viewport) : null;
   const resourceLabels = world.resourceNodes.map(node => ({ node, point: toScreen({ ...node.anchor, z: node.anchor.z + 2 }, camera, viewport) }));
@@ -169,7 +193,7 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
   return (
     <main className="flex h-dvh min-h-[520px] flex-col overflow-hidden bg-[#101f25] font-sans text-slate-100">
       <header className="z-10 flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#101d23] px-5 py-4 sm:px-7">
-        <div className="flex items-center gap-3"><span className="flex size-9 items-center justify-center rounded-lg border border-amber-200/30 text-xl text-amber-200" aria-hidden="true">◇</span><div><h1 className="text-lg font-semibold tracking-tight">OpenWorld Economy</h1><p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Spatial prototype / Milestones 0–5</p></div></div>
+        <div className="flex items-center gap-3"><span className="flex size-9 items-center justify-center rounded-lg border border-amber-200/30 text-xl text-amber-200" aria-hidden="true">◇</span><div><h1 className="text-lg font-semibold tracking-tight">OpenWorld Economy</h1><p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">Spatial prototype / Milestones 0–6</p></div></div>
         <span className="rounded-full border border-emerald-300/20 bg-emerald-300/5 px-3 py-1.5 text-xs text-emerald-200">{tool === "build" ? "Build tool active" : "Inspect tool"}</span>
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
@@ -226,6 +250,7 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
               }
             }}
           >Your browser needs Canvas support to display this map.</canvas>
+          <canvas ref={logisticsCanvasRef} aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full" />
           <div className="pointer-events-none absolute left-5 top-5 rounded-lg border border-white/10 bg-[#102128]/90 px-4 py-3 shadow-lg"><p className="text-[10px] uppercase tracking-[0.2em] text-amber-200">The first frontier</p><p className="mt-1 text-xs text-slate-300">{world.size} × {world.size} cells · Stepped terrain</p></div>
           {world.settlement && cityLabel && <button
             className="absolute -translate-x-1/2 -translate-y-full rounded-lg border border-amber-200/30 bg-[#102128]/95 px-4 py-2 text-left shadow-lg"
@@ -281,6 +306,18 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
               }}><span><span className="block text-xs font-medium">{site.name}</span><span className="mt-1 block text-[10px] text-slate-400">{site.assignedWorkers}/{site.requiredWorkers} workers · {site.stored}/{site.storageCapacity} {site.output}</span></span><span className={`shrink-0 text-[10px] ${site.status === "running" ? "text-emerald-300" : site.status === "missing_workers" ? "text-amber-300" : "text-red-300"}`}>● {statusLabel}</span></button>;
             }) ?? <p className="text-xs text-slate-400">Connecting to the production server…</p>}</div>
           </section>
+          {production && <section className="mb-6 border-b border-white/10 pb-5" aria-label="Logistics overview">
+            <div className="flex items-end justify-between gap-3"><div><p className="text-[10px] uppercase tracking-[0.2em] text-cyan-200">Logistics</p><h2 className="mt-1 text-lg font-semibold">Warehouse network</h2></div><span className="text-xs text-slate-400">{production.logistics.shipments.filter(shipment => shipment.status === "in_transit").length} moving</span></div>
+            <div className="mt-3 grid grid-cols-3 gap-2">{Object.entries(production.logistics.warehouseInventory).map(([commodity, quantity]) => <div key={commodity} className="rounded-lg border border-white/10 bg-black/10 p-2 text-center"><span className="block font-mono text-base text-cyan-100">{quantity}</span><span className="text-[10px] capitalize text-slate-400">{commodity}</span></div>)}</div>
+            <div className="mt-3 space-y-2">{production.logistics.shipments.slice(-4).reverse().map(shipment => {
+              const route = production.logistics.routes.find(candidate => candidate.id === shipment.routeId);
+              return <button key={shipment.id} className={`${button} flex w-full items-center justify-between gap-3 text-left`} onClick={() => {
+                const midpoint = route?.path[Math.floor(route.path.length / 2)];
+                if (midpoint) setCamera(current => ({ ...current, focus: focusCell(midpoint), zoom: Math.max(current.zoom, 1.2) }));
+              }}><span><span className="block text-xs font-medium">{shipment.cargo.quantity} <span className="capitalize">{shipment.cargo.commodity}</span></span><span className="mt-1 block text-[10px] text-slate-400">{route?.name ?? "Warehouse route"}</span></span><span className={`text-[10px] ${shipment.status === "in_transit" ? "text-cyan-300" : "text-emerald-300"}`}>{shipment.status === "in_transit" ? "● In transit" : "✓ Arrived"}</span></button>;
+            })}</div>
+            <p className="mt-3 text-[11px] leading-5 text-slate-400">Dashed route lines follow connected road cells. Cargo enters warehouse inventory only when the server marks its shipment arrived.</p>
+          </section>}
           <section className="mb-6 border-b border-white/10 pb-5" aria-label="Construction tools">
             <div className="flex items-center justify-between gap-3">
               <div><p className="text-[10px] uppercase tracking-[0.2em] text-amber-200">World tool</p><h2 className="mt-1 text-lg font-semibold">{tool === "build" ? "Place building" : "Inspect"}</h2></div>
@@ -307,9 +344,10 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
             <div className="mt-4 flex items-center justify-between text-xs"><span className="text-slate-400">Output</span><span>+{selectedProduction.outputAmount} / {selectedProduction.cycleMs / 1000}s</span></div>
             <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10"><div className={`h-full transition-[width] ${selectedProduction.status === "running" ? "bg-emerald-400" : "bg-slate-600"}`} style={{ width: `${Math.min(100, selectedProduction.progressMs / selectedProduction.cycleMs * 100)}%` }} /></div>
             <div className="mt-4 flex items-center justify-between text-xs"><span className="text-slate-400">Local storage</span><span>{selectedProduction.stored} / {selectedProduction.storageCapacity} {selectedProduction.output}</span></div>
-            <button className={`${button} mt-3 w-full`} disabled={productionBusy || selectedProduction.stored === 0} onClick={() => void updateProduction(selectedProduction, "collect")}>Collect output</button>
+            <button className={`${button} mt-3 w-full`} disabled={productionBusy || selectedProduction.stored === 0} onClick={() => void updateProduction(selectedProduction, "collect")}>Dispatch to warehouse</button>
             {productionMessage && <p className="mt-2 text-xs text-amber-100" aria-live="polite">{productionMessage}</p>}
           </div>}
+          {selectedWarehouseInventory && <div className="mt-4 rounded-xl border border-cyan-300/20 bg-cyan-300/5 p-4"><p className="text-[10px] uppercase tracking-[0.18em] text-cyan-200">Warehouse inventory</p><div className="mt-3 grid grid-cols-3 gap-2">{Object.entries(selectedWarehouseInventory).map(([commodity, quantity]) => <div key={commodity} className="text-center"><span className="block font-mono text-lg text-white">{quantity}</span><span className="text-[10px] capitalize text-slate-400">{commodity}</span></div>)}</div><p className="mt-3 text-xs leading-5 text-slate-400">Only arrived shipments are stored here.</p></div>}
           {selectedResource && <div className="mt-3 rounded-lg border border-white/10 bg-black/10 p-3 text-xs text-slate-300"><p className="capitalize">Resource: {selectedResource.type}</p><p className="mt-1">Estimated reserve: {selectedResource.estimatedReserve.toLocaleString("en-US")}</p><p className="mt-1">Region: {selectedResource.cellCount} cells</p><p className="mt-2 text-slate-500">Decorative markers show presence; reserve is stored on this resource node.</p></div>}
           {selected?.terrain === "farmland" && !selectedProduction && <p className="mt-2 text-xs leading-5 text-slate-400">Agricultural land suitable for food production at a Farm.</p>}
           <div className="mt-5" aria-live="polite" aria-atomic="true">
@@ -318,7 +356,7 @@ export default function WorldMap({ world: initialWorld }: { world: WorldSnapshot
           <button className={`${button} mt-5 w-full`} disabled={!selected} onClick={() => { if (selected) setCamera(current => ({ ...current, focus: focusCell(selected) })); }}>Focus selected tile</button>
           <div className="mt-7 border-t border-white/10 pt-5"><h3 className="text-xs font-medium text-slate-300">Map layers</h3><label className="mt-4 flex cursor-pointer items-center justify-between text-sm text-slate-400">Tile grid<input type="checkbox" checked={grid} onChange={event => setGrid(event.target.checked)} className="size-4 accent-amber-200" /></label><div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-400"><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#718e6c]" />Grassland</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#2c7187]" />Water</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#92988f]" />Mountain</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#456f4d]" />Forest</span><span><span className="mr-2 inline-block size-2.5 rounded-sm bg-[#a39351]" />Farmland</span></div></div>
           <div className="mt-7 border-t border-white/10 pt-5 text-xs leading-6 text-slate-400"><h3 className="mb-2 font-medium text-slate-300">Navigation</h3><p>Drag to pan · Scroll to zoom</p><p>WASD / arrows to pan when map is focused</p><p>Enter to inspect the center · Esc to clear</p></div>
-          <p className="mt-7 text-[11px] leading-5 text-slate-500">Construction and production are authoritative for this running server session. Costs, persistent inventory, authentication, and population growth arrive later.</p>
+          <p className="mt-7 text-[11px] leading-5 text-slate-500">Construction, production, shipment timing, and warehouse arrivals are authoritative for this running server session. Costs, persistence, authentication, and population growth arrive later.</p>
         </aside>
       </div>
       <footer className="flex flex-wrap justify-between gap-2 border-t border-white/10 bg-[#101d23] px-5 py-2.5 font-mono text-[10px] text-slate-400"><span>SEED / {world.seed}</span><span>{world.cells.length.toLocaleString("en-US")} CELLS · {world.chunkSize} × {world.chunkSize}-CELL CHUNKS</span><span>2:1 ISOMETRIC / CANVAS</span></footer>

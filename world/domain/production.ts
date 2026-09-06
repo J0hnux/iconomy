@@ -1,5 +1,6 @@
 import { buildingAt, footprintOf, type Building, type BuildingType } from "./settlement";
 import type { SurfaceCell, WorldPosition, WorldSnapshot } from "./world";
+import type { LogisticsSnapshot } from "./logistics";
 
 export const producerTypes = ["farm", "lumber_camp", "quarry"] as const satisfies readonly BuildingType[];
 export type ProducerType = typeof producerTypes[number];
@@ -44,6 +45,7 @@ export type ProductionSnapshot = Readonly<{
   assignedWorkers: number;
   availableWorkers: number;
   sites: readonly ProductionSite[];
+  logistics: LogisticsSnapshot;
 }>;
 
 export function isProducerType(type: BuildingType): type is ProducerType {
@@ -78,7 +80,7 @@ export function describeProduction(state: ProductionState, building: Building): 
     ? `Producing ${recipe.output} every ${recipe.cycleMs / 1000} seconds.`
     : status === "missing_workers"
       ? `Needs ${recipe.requiredWorkers - state.assignedWorkers} more worker${recipe.requiredWorkers - state.assignedWorkers === 1 ? "" : "s"}.`
-      : `Storage is full. Collect ${recipe.output} to resume.`;
+      : `Storage is full. Dispatch ${recipe.output} to the warehouse to resume.`;
   return { ...state, type: building.type, name: building.type === "lumber_camp" ? "Lumber Camp" : building.type === "farm" ? "Farm" : "Quarry", ...recipe, status, statusReason };
 }
 
