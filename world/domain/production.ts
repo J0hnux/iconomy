@@ -79,6 +79,47 @@ export type ProductionRecipe = Readonly<{
 export const productionTiers = ["primitive", "improved"] as const;
 export type ProductionTier = (typeof productionTiers)[number];
 
+/**
+ * Capital cost of industrialising a site, on top of the equipment it must hold.
+ *
+ * Without a real cost an upgrade would strictly dominate building more
+ * primitive capacity, and the choice the player is meant to weigh would
+ * collapse into an obvious answer.
+ */
+export const productionUpgradePolicy = {
+  upgradeCostCents: 18_000,
+} as const;
+
+export type UpgradeOption = Readonly<{
+  recipeId: RecipeId;
+  name: string;
+  costCents: number;
+  equipmentRequirements: Readonly<Partial<Record<Commodity, number>>>;
+  currentWorkers: number;
+  upgradedWorkers: number;
+  workersFreed: number;
+  currentOutputPerCycle: number;
+  upgradedOutputPerCycle: number;
+  currentOutputPerWorker: number;
+  upgradedOutputPerWorker: number;
+  affordable: boolean;
+  equipmentHeld: boolean;
+  blockedReasons: readonly string[];
+}>;
+
+export type ExpansionOption = Readonly<{
+  producerType: ProducerType;
+  buildingName: string;
+  recipeId: RecipeId;
+  costCents: number;
+  materials: Readonly<Partial<Record<Commodity, number>>>;
+  requiredWorkers: number;
+  outputPerCycle: number;
+  outputPerWorker: number;
+  affordable: boolean;
+  blockedReasons: readonly string[];
+}>;
+
 const recipe = (
   definition: Omit<
     ProductionRecipe,
@@ -368,6 +409,8 @@ export type ProductionSite = ProductionState &
     /** Output per cycle divided by the workers the recipe requires. */
     outputPerWorkerPerCycle: number;
     upgradeRecipeId: RecipeId | null;
+    upgradeOption: UpgradeOption | null;
+    expansionOption: ExpansionOption | null;
     status: ProductionStatus;
     statusReason: string;
     laborEfficiency: number;
@@ -476,6 +519,101 @@ export function upgradeRecipeFor(recipeId: RecipeId) {
 export function outputPerWorker(recipeId: RecipeId) {
   const candidate = productionRecipes[recipeId];
   return recipeOutput(candidate).amount / candidate.requiredWorkers;
+}
+
+/**
+ * The two ways to grow output, priced side by side so the player can weigh
+ * them: industrialise this site, or build another primitive one. Neither is
+ * always better, which is the decision this data exists to support.
+ */
+export function describeUpgradeOption(input: {
+  recipeId: RecipeId;
+  assignedWorkers: number;
+  cashCents: number;
+  inventory: CommodityInventory;
+}): UpgradeOption | null {
+  const current = productionRecipes[input.recipeId];
+  const improved = upgradeRecipeFor(input.recipeId);
+  if (!improved) return null;
+  const missingEquipment = (
+    Object.entries(improved.equipmentRequirements) as [Commodity, number][]
+  ).filter(([commodity, quantity]) => input.inventory[commodity] < quantity);
+  const affordable = input.cashCents >= productionUpgradePolicy.upgradeCostCents;
+  const blockedReasons: string[] = [];
+  if (!affordable)
+    blockedReasons.push(
+      `Needs $${((productionUpgradePolicy.upgradeCostCents - input.cashCents) / 100).toFixed(2)} more in credits.`,
+    );
+  for (const [commodity, quantity] of missingEquipment)
+    blockedReasons.push(
+      `Needs ${quantity - input.inventory[commodity]} more ${commodityDefinitions[commodity].name}.`,
+    );
+  return {
+    recipeId: improved.id,
+    name: improved.name,
+    costCents: productionUpgradePolicy.upgradeCostCents,
+    equipmentRequirements: { ...improved.equipmentRequirements },
+    currentWorkers: current.requiredWorkers,
+    upgradedWorkers: improved.requiredWorkers,
+    workersFreed: Math.max(
+      0,
+      Math.min(input.assignedWorkers, current.requiredWorkers) -
+        improved.requiredWorkers,
+    ),
+    currentOutputPerCycle: recipeOutput(current).amount,
+    upgradedOutputPerCycle: recipeOutput(improved).amount,
+    currentOutputPerWorker: Math.round(outputPerWorker(current.id) * 100) / 100,
+    upgradedOutputPerWorker:
+      Math.round(outputPerWorker(improved.id) * 100) / 100,
+    affordable,
+    equipmentHeld: missingEquipment.length === 0,
+    blockedReasons,
+  };
+}
+
+/**
+ * The alternative to industrialising: another primitive site of the same kind.
+ * Construction cost is supplied by the caller so production keeps no dependency
+ * on the construction rules.
+ */
+export function describeExpansionOption(input: {
+  producerType: ProducerType;
+  buildingName: string;
+  costCents: number;
+  materials: Readonly<Partial<Record<Commodity, number>>>;
+  cashCents: number;
+  inventory: CommodityInventory;
+}): ExpansionOption {
+  const recipeId = defaultRecipeByProducer[input.producerType];
+  const recipe = productionRecipes[recipeId];
+  const blockedReasons: string[] = [];
+  const affordable = input.cashCents >= input.costCents;
+  if (!affordable)
+    blockedReasons.push(
+      `Needs $${((input.costCents - input.cashCents) / 100).toFixed(2)} more in credits.`,
+    );
+  for (const [commodity, quantity] of Object.entries(input.materials) as [
+    Commodity,
+    number,
+  ][]) {
+    const missing = quantity - input.inventory[commodity];
+    if (missing > 0)
+      blockedReasons.push(
+        `Needs ${missing} more ${commodityDefinitions[commodity].name}.`,
+      );
+  }
+  return {
+    producerType: input.producerType,
+    buildingName: input.buildingName,
+    recipeId,
+    costCents: input.costCents,
+    materials: { ...input.materials },
+    requiredWorkers: recipe.requiredWorkers,
+    outputPerCycle: recipeOutput(recipe).amount,
+    outputPerWorker: Math.round(outputPerWorker(recipeId) * 100) / 100,
+    affordable,
+    blockedReasons,
+  };
 }
 
 export function availableRecipes(type: ProducerType) {
@@ -650,6 +788,12 @@ export function describeProduction(
   state: ProductionState,
   building: Building,
   inventory: CommodityInventory,
+  comparison?: {
+    cashCents: number;
+    expansionCostCents: number;
+    expansionMaterials: Readonly<Partial<Record<Commodity, number>>>;
+    buildingName: string;
+  },
 ): ProductionSite | null {
   if (!isProducerType(building.type)) return null;
   const selected = recipeForState(state, building.type);
@@ -719,6 +863,24 @@ export function describeProduction(
     outputPerWorkerPerCycle:
       Math.round((output.amount / selected.requiredWorkers) * 100) / 100,
     upgradeRecipeId: upgradeRecipeFor(selected.id)?.id ?? null,
+    upgradeOption: comparison
+      ? describeUpgradeOption({
+          recipeId: selected.id,
+          assignedWorkers: state.assignedWorkers,
+          cashCents: comparison.cashCents,
+          inventory,
+        })
+      : null,
+    expansionOption: comparison
+      ? describeExpansionOption({
+          producerType: building.type,
+          buildingName: comparison.buildingName,
+          costCents: comparison.expansionCostCents,
+          materials: comparison.expansionMaterials,
+          cashCents: comparison.cashCents,
+          inventory,
+        })
+      : null,
     status,
     statusReason,
     laborEfficiency: efficiency,

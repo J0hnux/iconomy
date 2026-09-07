@@ -37,9 +37,11 @@ import {
   isProductionPriority,
   isRecipeId,
   productionRecipes,
+  productionUpgradePolicy,
   recipeForState,
   recipeOutput,
   resolveProduction,
+  upgradeRecipeFor,
   withStartingProduction,
   type Commodity,
   type ProductionSnapshot,
@@ -161,6 +163,7 @@ export type GameCommand =
       expectedOriginPriceCents: number;
       expectedDestinationPriceCents: number;
     }>
+  | Readonly<{ type: "upgrade_production"; buildingId: string }>
   | Readonly<{
       type: "set_industry_paused";
       commodity: Commodity;
@@ -766,6 +769,8 @@ export class LocalGameSimulation {
         );
       case "create_regional_shipment":
         return this.createPlayerRegionalShipment(command);
+      case "upgrade_production":
+        return this.upgradeProduction(command.buildingId);
       case "set_industry_paused":
         return this.setIndustryPaused(command.commodity, command.paused);
       case "demolish":
@@ -1316,6 +1321,11 @@ export class LocalGameSimulation {
     const selected = choices.find((candidate) => candidate.id === recipeId);
     if (!selected)
       return this.failure(422, "This recipe cannot run in this building.");
+    if (selected.tier === "improved")
+      return this.failure(
+        422,
+        `${selected.name} is an industrial upgrade. Use the upgrade action so its cost and equipment are checked.`,
+      );
     if (recipeForState(state, building.type).id === selected.id)
       return this.success();
     if (state.stored > 0)
@@ -1339,6 +1349,75 @@ export class LocalGameSimulation {
       this.state.simulationTime,
       "production",
       `${buildingDefinitions[building.type].name} selected ${selected.name}.`,
+    );
+    return this.success();
+  }
+
+  /**
+   * Industrialises a site in one atomic action.
+   *
+   * Adopting an improved tier costs capital and requires the equipment to be
+   * held, so it is a genuine alternative to building more primitive capacity
+   * rather than a free improvement. Stored output does not block the change the
+   * way a lateral recipe switch does, because an improved tier produces the
+   * same commodity as the recipe it upgrades. Surplus workers are released
+   * here, which is what makes freed labor visible and reusable.
+   */
+  private upgradeProduction(buildingId: string): CommandResult {
+    const building = this.producers.find(
+      (candidate) => candidate.id === buildingId,
+    );
+    const state = this.state.productionStates.get(buildingId);
+    if (!building || !state)
+      return this.failure(404, "Production site was not found.");
+    const current = recipeForState(state, building.type);
+    const improved = upgradeRecipeFor(current.id);
+    if (!improved)
+      return this.failure(
+        422,
+        `${current.name} has no industrialised upgrade.`,
+      );
+    const cost = productionUpgradePolicy.upgradeCostCents;
+    if (this.state.cashCents < cost)
+      return this.failure(
+        422,
+        `Upgrading to ${improved.name} costs ${this.formatMoney(cost)}; ${this.formatMoney(this.state.cashCents)} is available.`,
+      );
+    const missing = (
+      Object.entries(improved.equipmentRequirements) as [Commodity, number][]
+    ).filter(
+      ([commodity, quantity]) =>
+        this.state.warehouseInventory[commodity] < quantity,
+    );
+    if (missing.length > 0)
+      return this.failure(
+        422,
+        `${improved.name} needs ${missing
+          .map(
+            ([commodity, quantity]) =>
+              `${quantity - this.state.warehouseInventory[commodity]} more ${commodityDefinitions[commodity].name}`,
+          )
+          .join(" and ")} held in storage.`,
+      );
+    // Every check has passed, so the change applies as one operation.
+    this.state.cashCents -= cost;
+    const released = Math.max(
+      0,
+      state.assignedWorkers - improved.requiredWorkers,
+    );
+    this.state.productionStates.set(buildingId, {
+      ...state,
+      recipeId: improved.id,
+      assignedWorkers: state.assignedWorkers - released,
+      progressMs: 0,
+      laborRemainder: 0,
+      updatedAt: this.state.simulationTime,
+    });
+    this.state.revision++;
+    this.addEvent(
+      this.state.simulationTime,
+      "production",
+      `${buildingDefinitions[building.type].name} upgraded to ${improved.name} for ${this.formatMoney(cost)}${released > 0 ? `, freeing ${released} worker${released === 1 ? "" : "s"}` : ""}.`,
     );
     return this.success();
   }
@@ -1987,7 +2066,16 @@ export class LocalGameSimulation {
     const sites = this.producers.flatMap((building) => {
       const state = this.state.productionStates.get(building.id);
       const site = state
-        ? describeProduction(state, building, this.state.warehouseInventory)
+        ? describeProduction(state, building, this.state.warehouseInventory, {
+            cashCents: this.state.cashCents,
+            expansionCostCents: isConstructibleBuildingType(building.type)
+              ? constructionCosts[building.type].cashCents
+              : 0,
+            expansionMaterials: isConstructibleBuildingType(building.type)
+              ? constructionCosts[building.type].materials
+              : {},
+            buildingName: buildingDefinitions[building.type].name,
+          })
         : null;
       return site ? [site] : [];
     });

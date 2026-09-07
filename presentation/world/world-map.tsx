@@ -23,7 +23,6 @@ import type {
 import {
   availableRecipes,
   defaultRecipeByProducer,
-  outputPerWorker,
   isProducerType,
   productionPriorities,
   productionRecipes,
@@ -589,6 +588,13 @@ export default function WorldMap({
       "Changing production priority…",
       () => `Production priority set to ${priority}.`,
     );
+  const upgradeProduction = (site: ProductionSite) =>
+    issueProductionCommand(
+      { type: "upgrade_production", buildingId: site.buildingId },
+      "Upgrading production…",
+      () =>
+        `${site.name} industrialised. Reassign the freed workers where they are needed.`,
+    );
   const setIndustryPaused = (commodity: Commodity, paused: boolean) =>
     issueProductionCommand(
       { type: "set_industry_paused", commodity, paused },
@@ -926,7 +932,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestone 27
+              Prototype / Milestone 28
             </p>
           </div>
         </div>
@@ -2414,15 +2420,96 @@ export default function WorldMap({
                   </dd>
                 </div>
               </dl>
-              {selectedProduction.upgradeRecipeId && (
-                <p className="mt-2 text-[10px] leading-4 text-sky-200">
-                  {(() => {
-                    const upgrade =
-                      productionRecipes[selectedProduction.upgradeRecipeId];
-                    return `${upgrade.name} needs ${materialSummary(upgrade.equipmentRequirements)} and ${upgrade.requiredWorkers} worker${upgrade.requiredWorkers === 1 ? "" : "s"}, producing ${outputPerWorker(upgrade.id)} per worker. Tools are held, not consumed.`;
-                  })()}
-                </p>
-              )}
+              {selectedProduction.upgradeOption &&
+                selectedProduction.expansionOption && (
+                  <section
+                    className="mt-3 border-t border-white/10 pt-3"
+                    aria-label="Grow this industry"
+                  >
+                    <p className="text-[10px] uppercase tracking-[0.16em] text-slate-400">
+                      Grow this industry
+                    </p>
+                    <p className="mt-1 text-[10px] leading-4 text-slate-500">
+                      More output from the same site, or more sites. Which wins
+                      depends on whether labor or capital is scarce.
+                    </p>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      {[
+                        {
+                          key: "upgrade",
+                          title: `Upgrade · ${selectedProduction.upgradeOption.name}`,
+                          cost: `${money(selectedProduction.upgradeOption.costCents)} + holds ${materialSummary(selectedProduction.upgradeOption.equipmentRequirements)}`,
+                          workers: `${selectedProduction.upgradeOption.currentWorkers} → ${selectedProduction.upgradeOption.upgradedWorkers}`,
+                          output: `${selectedProduction.upgradeOption.currentOutputPerCycle} → ${selectedProduction.upgradeOption.upgradedOutputPerCycle}`,
+                          perWorker: `${selectedProduction.upgradeOption.currentOutputPerWorker} → ${selectedProduction.upgradeOption.upgradedOutputPerWorker}`,
+                          blocked:
+                            selectedProduction.upgradeOption.blockedReasons,
+                        },
+                        {
+                          key: "expand",
+                          title: `Build another ${selectedProduction.expansionOption.buildingName}`,
+                          cost: `${money(selectedProduction.expansionOption.costCents)} + ${materialSummary(selectedProduction.expansionOption.materials)}`,
+                          workers: `+${selectedProduction.expansionOption.requiredWorkers}`,
+                          output: `+${selectedProduction.expansionOption.outputPerCycle}`,
+                          perWorker: `${selectedProduction.expansionOption.outputPerWorker}`,
+                          blocked:
+                            selectedProduction.expansionOption.blockedReasons,
+                        },
+                      ].map((option) => (
+                        <article
+                          key={option.key}
+                          className="rounded-lg border border-white/10 bg-black/20 p-2"
+                        >
+                          <h4 className="text-[11px] font-semibold text-slate-100">
+                            {option.title}
+                          </h4>
+                          <dl className="mt-1 space-y-0.5 text-[10px]">
+                            {[
+                              ["Cost", option.cost],
+                              ["Workers", option.workers],
+                              ["Output / cycle", option.output],
+                              ["Per worker", option.perWorker],
+                            ].map(([label, value]) => (
+                              <div key={label} className="flex justify-between gap-2">
+                                <dt className="text-slate-500">{label}</dt>
+                                <dd className="text-right text-slate-200">
+                                  {value}
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                          {option.blocked.length > 0 && (
+                            <ul className="mt-1 space-y-0.5 text-[10px] text-amber-200">
+                              {option.blocked.map((reason) => (
+                                <li key={reason}>{reason}</li>
+                              ))}
+                            </ul>
+                          )}
+                          <button
+                            type="button"
+                            disabled={
+                              productionBusy || option.blocked.length > 0
+                            }
+                            className={`${button} mt-2 w-full px-2 py-1 text-[10px] disabled:opacity-40`}
+                            onClick={() =>
+                              option.key === "upgrade"
+                                ? upgradeProduction(selectedProduction)
+                                : buildMoreProduction(selectedProduction.output)
+                            }
+                          >
+                            {option.key === "upgrade"
+                              ? "Upgrade this site"
+                              : "Choose a site to build"}
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                      Tools are held, not consumed. Upgrading releases the
+                      workers it no longer needs.
+                    </p>
+                  </section>
+                )}
               {availableRecipes(selectedProduction.type).length > 1 && (
                 <fieldset className="mt-3 border-t border-white/10 pt-3">
                   <legend className="text-[10px] uppercase tracking-[0.16em] text-slate-400">

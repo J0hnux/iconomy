@@ -82,6 +82,16 @@ export function PlayerHud({
             ["Available", snapshot?.labor.unassignedWorkers ?? "—"],
             ["Labor shortages", snapshot?.labor.shortageBuildings ?? "—"],
             ["Housing capacity", snapshot?.population.housingCapacity ?? "—"],
+            [
+              "Housing headroom",
+              snapshot
+                ? Math.max(
+                    0,
+                    snapshot.population.housingCapacity -
+                      snapshot.population.totalPopulation,
+                  )
+                : "—",
+            ],
             ["Food required", snapshot?.population.foodRequired ?? "—"],
             ["Food available", snapshot?.population.foodAvailable ?? "—"],
             ["Food consumed", snapshot?.population.foodConsumed ?? "—"],
@@ -115,6 +125,13 @@ export function PlayerHud({
             <p className="text-[9px] uppercase tracking-wide text-slate-500">
               Why people move
             </p>
+            {snapshot.population.housingCapacity <=
+              snapshot.population.totalPopulation && (
+              <p className="mt-1 text-[10px] leading-4 text-amber-200">
+                Housing is full, so no one can move in. Build houses to reopen
+                migration.
+              </p>
+            )}
             <ul className="mt-1 space-y-1 text-[10px] leading-4">
               {snapshot.population.lastMigration.signals.map((signal) => (
                 <li
@@ -335,6 +352,16 @@ export function BottomHud({
             ["Available", snapshot?.labor.unassignedWorkers ?? "—"],
             ["Labor shortages", snapshot?.labor.shortageBuildings ?? "—"],
             ["Housing capacity", snapshot?.population.housingCapacity ?? "—"],
+            [
+              "Housing headroom",
+              snapshot
+                ? Math.max(
+                    0,
+                    snapshot.population.housingCapacity -
+                      snapshot.population.totalPopulation,
+                  )
+                : "—",
+            ],
             ["Food required", snapshot?.population.foodRequired ?? "—"],
             ["Food available", snapshot?.population.foodAvailable ?? "—"],
             ["Food consumed", snapshot?.population.foodConsumed ?? "—"],

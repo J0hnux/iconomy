@@ -380,6 +380,18 @@ For verification, watch the HUD across the first two migration periods. A settle
 
 For verification, select the starting Farm and note its primitive tier at 2 output per worker. Dispatch its crops, reduce it to one worker, and switch to Grow Crops (Iron Tools): a worker is released and the site reports missing equipment. Deliver a single Iron Tools unit and compare output against an untouched Farm over the same window; one worker should outproduce two, and the tool should still be in the warehouse afterwards.
 
+## Milestone 28: city and industry expansion
+
+- Growing an industry is now a choice the player makes with numbers in front of them. Each production site compares upgrading itself against building another of its kind, showing cost, equipment, workers before and after, output per cycle, and output per worker, with the reasons either option is currently blocked.
+- Neither option wins outright. Building another Farm costs $200.00 and a Log, needs two more workers, and adds four Crops a cycle. Upgrading costs $180.00 and one held Iron Tools, releases a worker, and lifts output per worker from two to five. Scarce labor favours upgrading; scarce tools or capital favour building.
+- Industrialising is a single action. Upgrade validates the credits and the equipment, charges the capital once, switches the tier, and releases the workers the improved recipe no longer needs. A refused upgrade changes nothing at all.
+- An industrial tier can only be adopted through that action. Selecting one as an ordinary recipe is refused, so its cost and equipment can never be bypassed and there is one obvious path to industrialisation.
+- Stored output no longer blocks the change, because an improved tier produces the same commodity as the recipe it upgrades. That property is asserted rather than assumed.
+- Housing is legible as the constraint it is. The HUD reports housing headroom beside capacity and says plainly when housing is full and migration is therefore closed, connecting building houses to gaining workers.
+- Freed labor is real labor. Workers released by an upgrade return to the pool and can be assigned to any site that still wants them using the existing worker controls.
+
+For verification, select the Farm and read the two options side by side. Upgrading is blocked until an Iron Tools unit is held, so run the iron chain or import one, then upgrade: a worker is released, output per worker rises from two to five, and the credits are charged once. Assign that worker to a short-staffed site. Then compare: with spare workers and no tools, building a second Farm produces more in total; with tight labor, the upgraded Farm produces more per worker. Fill housing to capacity and watch the HUD report that migration is closed until more houses are built.
+
 ## Run and verify
 
 ```bash
