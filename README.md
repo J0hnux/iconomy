@@ -265,7 +265,17 @@ For consumption verification, note the Food Required and Food Available values, 
 
 For local-market verification, inspect a commodity's Recent supply, Recent demand, Consumed, and Price reasons fields. Deliver a large shipment and observe supply and inventory pressure lower its target price as stock becomes excessive. Sell or consume inventory faster than deliveries replace it and observe shortage pressure raise the price. Identical saved states and simulation-time advances produce identical quotes and explanations.
 
-Milestone 18 is the second simulation milestone after the Milestone 16.7 gameplay integration. The next economy milestone must be the player-facing Milestone 19 market integration before another simulation-heavy system is added.
+Milestone 18 is the second simulation milestone after the Milestone 16.7 gameplay integration. Milestone 19 below fulfills the required player-facing market conversion before another simulation-heavy system is added.
+
+## Milestone 19: local market decisions
+
+- Every commodity listing now accepts an exact integer sale quantity and shows owned stock, the current authoritative quote, estimated revenue, and the amount that will remain stockpiled before the player submits the command.
+- Accepted sales still use the existing local `sell_goods` command. The simulation validates the live quote and Warehouse balance, then atomically removes inventory, credits cash, records market demand, publishes price history, and returns an authoritative receipt with the actual unit price, revenue, and retained balance.
+- Retain all clears the sale draft without moving inventory. Partial selling makes stockpiling explicit: unsold goods remain in the primary Warehouse for household consumption, construction, or downstream recipes.
+- Shift production opens an existing compatible producer in the established Milestone 16 building inspector. Process stock opens a compatible downstream processor derived from real recipe inputs, and Build more enters the existing construction tool with the recipe-configured building type. Worker allocation, pause/resume, priority, recipe choice, and construction remain owned by their existing commands and controls.
+- Buying remains unavailable because the local economy does not yet contain a conserved external seller inventory. Market controls do not fabricate goods or cash, and estimated revenue remains presentation-only.
+
+For gameplay verification, overproduce and dispatch Crops, then sell exact quantities while watching recent supply, demand, inventory, price trend, and price reasons. Compare selling the full stock with retaining Crops for food processing. Use Shift production to pause or restaff a Farm, change a compatible Workshop recipe, or enter Farm construction. Reduce food production and accelerate time to create a shortage, then resume or expand production and watch inventory and price pressure recover.
 
 ## Run and verify
 

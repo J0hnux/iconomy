@@ -1993,6 +1993,13 @@ test("market sales remove warehouse goods, credit cash, and create events", () =
   );
   assert.equal(sale.ok, true);
   assert.equal(sale.revenueCents, food.priceCents * 2);
+  assert.deepEqual(sale.sale, {
+    commodity: "food",
+    quantity: 2,
+    unitPriceCents: food.priceCents,
+    revenueCents: food.priceCents * 2,
+    remainingInventory: 6,
+  });
   assert.equal(sale.readModel.economy.logistics.warehouseInventory.food, 6);
   assert.equal(sale.readModel.economy.population.foodAvailable, 12);
   assert.equal(
@@ -2039,6 +2046,47 @@ test("market sales remove warehouse goods, credit cash, and create events", () =
   );
   assert.equal(staleQuote.status, 409);
   assert.ok(staleQuote.readModel);
+});
+
+test("partial market sales retain unsold stock and rejected sales are atomic", () => {
+  const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const initial = simulation.read(1_000);
+  const food = initial.economy.market.listings.find(
+    (listing) => listing.commodity === "food",
+  );
+  const owned = initial.economy.logistics.warehouseInventory.food;
+  const cash = initial.economy.market.cashCents;
+  const accepted = simulation.execute(
+    {
+      type: "sell_goods",
+      commodity: "food",
+      quantity: 2,
+      expectedPriceCents: food.priceCents,
+    },
+    1_000,
+  );
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.sale.remainingInventory, owned - 2);
+  assert.equal(
+    accepted.readModel.economy.market.cashCents,
+    cash + accepted.sale.revenueCents,
+  );
+
+  const beforeRejected = simulation.exportSave();
+  const rejected = simulation.execute(
+    {
+      type: "sell_goods",
+      commodity: "food",
+      quantity: owned,
+      expectedPriceCents: accepted.readModel.economy.market.listings.find(
+        (listing) => listing.commodity === "food",
+      ).priceCents,
+    },
+    1_000,
+  );
+  assert.equal(rejected.status, 422);
+  assert.deepEqual(simulation.exportSave(), beforeRejected);
 });
 
 test("commodity browser search derives case-insensitive results from the catalog", () => {

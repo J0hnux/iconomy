@@ -110,6 +110,14 @@ export type GameReadModel = Readonly<{
   economy: ProductionSnapshot;
 }>;
 
+export type MarketSaleReceipt = Readonly<{
+  commodity: Commodity;
+  quantity: number;
+  unitPriceCents: number;
+  revenueCents: number;
+  remainingInventory: number;
+}>;
+
 export type CommandResult =
   | Readonly<{
       ok: true;
@@ -119,6 +127,7 @@ export type CommandResult =
       collected?: number;
       shipment?: Shipment;
       revenueCents?: number;
+      sale?: MarketSaleReceipt;
       constructionCost?: ConstructionCost;
       demolishedBuildingId?: string;
     }>
@@ -1084,6 +1093,13 @@ export class LocalGameSimulation {
       );
     const revenueCents = listing.priceCents * quantity;
     this.state.warehouseInventory[commodity] -= quantity;
+    const sale: MarketSaleReceipt = {
+      commodity,
+      quantity,
+      unitPriceCents: listing.priceCents,
+      revenueCents,
+      remainingInventory: this.state.warehouseInventory[commodity],
+    };
     this.addMarketActivity(commodity, { demand: quantity });
     this.state.cashCents += revenueCents;
     this.state.marketTick++;
@@ -1098,6 +1114,7 @@ export class LocalGameSimulation {
       ok: true,
       status: 200,
       revenueCents,
+      sale,
       readModel: this.readModel(),
     };
   }

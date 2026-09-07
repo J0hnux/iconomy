@@ -37,6 +37,7 @@ import {
   type CommandResult,
   type GameCommand,
   type GameReadModel,
+  type MarketSaleReceipt,
 } from "@/world/simulation/game-simulation";
 import {
   chunkOf,
@@ -163,6 +164,11 @@ export default function WorldMap({
   const marketChartReturnFocusRef = useRef<HTMLElement | null>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const [marketMessage, setMarketMessage] = useState<string | null>(null);
+  const [saleQuantities, setSaleQuantities] = useState<
+    Partial<Record<Commodity, string>>
+  >({});
+  const [lastMarketSale, setLastMarketSale] =
+    useState<MarketSaleReceipt | null>(null);
   const [simulationSpeed, setSimulationSpeed] = useState<SimulationSpeed>(1);
   const drag = useRef<{
     id: number;
@@ -524,8 +530,11 @@ export default function WorldMap({
       applyReadModel(result.readModel);
       persistSimulation(simulation);
       if (!result.ok) throw new Error(result.error);
+      if (!result.sale) throw new Error("The market did not return a sale receipt.");
+      setLastMarketSale(result.sale);
+      setSaleQuantities((current) => ({ ...current, [commodity]: "" }));
       setMarketMessage(
-        `${quantity} ${commodity} sold for ${money(result.revenueCents ?? 0)}.`,
+        `${quantity} ${commodityDefinitions[commodity].name} sold for ${money(result.sale.revenueCents)}.`,
       );
     } catch (error) {
       setMarketMessage(
@@ -547,6 +556,71 @@ export default function WorldMap({
       focus: focusCell(building),
       zoom: Math.max(current.zoom, 1.35),
     }));
+  };
+  const shiftProduction = (commodity: Commodity) => {
+    if (!production) return;
+    const compatibleRecipes = Object.values(productionRecipes).filter(
+      (recipe) => (recipe.outputs[commodity] ?? 0) > 0,
+    );
+    const existingSite = production.sites.find((site) =>
+      compatibleRecipes.some((recipe) => recipe.producer === site.type),
+    );
+    setMarketOpen(false);
+    setMarketMessage(null);
+    if (existingSite) {
+      focusBuilding(existingSite.buildingId);
+      setProductionMessage(
+        `Adjust workers, priority, pause state, or recipe to change ${commodityDefinitions[commodity].name} production.`,
+      );
+      return;
+    }
+    const producerType = compatibleRecipes[0]?.producer;
+    if (!producerType) return;
+    setTool("build");
+    setBuildingType(producerType);
+    setHovered(null);
+    setBuildMessage(
+      `Choose a valid site for a ${buildingDefinitions[producerType].name} that can produce ${commodityDefinitions[commodity].name}.`,
+    );
+  };
+  const processStock = (commodity: Commodity) => {
+    if (!production) return;
+    const processingRecipes = Object.values(productionRecipes).filter(
+      (recipe) => (recipe.consumableInputs[commodity] ?? 0) > 0,
+    );
+    const processor = production.sites.find((site) =>
+      processingRecipes.some((recipe) => recipe.producer === site.type),
+    );
+    setMarketOpen(false);
+    setMarketMessage(null);
+    if (processor) {
+      focusBuilding(processor.buildingId);
+      setProductionMessage(
+        `${commodityDefinitions[commodity].name} can feed ${processingRecipes.map((recipe) => recipe.name).join(" or ")}. Choose the recipe and allocate labor here.`,
+      );
+      return;
+    }
+    const producerType = processingRecipes[0]?.producer;
+    if (!producerType) return;
+    setTool("build");
+    setBuildingType(producerType);
+    setHovered(null);
+    setBuildMessage(
+      `Choose a valid site for a ${buildingDefinitions[producerType].name} that can process ${commodityDefinitions[commodity].name}.`,
+    );
+  };
+  const buildMoreProduction = (commodity: Commodity) => {
+    const producerType = Object.values(productionRecipes).find(
+      (recipe) => (recipe.outputs[commodity] ?? 0) > 0,
+    )?.producer;
+    if (!producerType) return;
+    setMarketOpen(false);
+    setTool("build");
+    setBuildingType(producerType);
+    setHovered(null);
+    setBuildMessage(
+      `Choose a valid site for another ${buildingDefinitions[producerType].name} that can produce ${commodityDefinitions[commodity].name}.`,
+    );
   };
   const confirmPlacement = (candidate: SurfaceCell | null) => {
     if (tool !== "build" || !candidate || submitting) return;
@@ -1144,35 +1218,136 @@ export default function WorldMap({
                       >
                         {listing.supplyStatus.replaceAll("_", " ")}
                       </span>
-                      <div className="flex gap-1">
-                        <button
-                          className={`${button} px-2 py-1 text-[11px]`}
-                          disabled={productionBusy || listing.available < 1}
-                          onClick={() =>
-                            void sellGoods(
-                              listing.commodity,
-                              1,
-                              listing.priceCents,
-                            )
-                          }
-                        >
-                          Sell 1
-                        </button>
-                        <button
-                          className={`${button} px-2 py-1 text-[11px]`}
-                          disabled={productionBusy || listing.available < 1}
-                          onClick={() =>
-                            void sellGoods(
-                              listing.commodity,
-                              listing.available,
-                              listing.priceCents,
-                            )
-                          }
-                        >
-                          Sell all
-                        </button>
-                      </div>
+                      <button
+                        className={`${button} px-2 py-1 text-[11px]`}
+                        onClick={() => shiftProduction(listing.commodity)}
+                      >
+                        Shift production
+                      </button>
                     </div>
+                    {(() => {
+                      const draft = saleQuantities[listing.commodity] ?? "";
+                      const canProcess = Object.values(productionRecipes).some(
+                        (recipe) =>
+                          (recipe.consumableInputs[listing.commodity] ?? 0) > 0,
+                      );
+                      const requested = /^\d+$/.test(draft)
+                        ? Number.parseInt(draft, 10)
+                        : 0;
+                      const validQuantity =
+                        requested > 0 && requested <= listing.available;
+                      const retained = validQuantity
+                        ? listing.available - requested
+                        : listing.available;
+                      return (
+                        <form
+                          className="mt-3 rounded-lg border border-white/10 bg-slate-950/30 p-2"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            if (validQuantity)
+                              void sellGoods(
+                                listing.commodity,
+                                requested,
+                                listing.priceCents,
+                              );
+                          }}
+                        >
+                          <div className="grid grid-cols-2 gap-2 text-[10px] sm:grid-cols-4">
+                            <div>
+                              <span className="block text-slate-500">Owned</span>
+                              <span className="mt-0.5 block font-mono text-slate-100">
+                                {listing.available}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="block text-slate-500">Current price</span>
+                              <span className="mt-0.5 block font-mono text-slate-100">
+                                {money(listing.priceCents)}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="block text-slate-500">Estimated revenue</span>
+                              <span className="mt-0.5 block font-mono text-emerald-200">
+                                {money(validQuantity ? requested * listing.priceCents : 0)}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="block text-slate-500">Retained after sale</span>
+                              <span className="mt-0.5 block font-mono text-sky-200">
+                                {retained}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="mt-2 flex items-end gap-2">
+                            <label className="min-w-0 flex-1 text-[10px] uppercase tracking-wide text-slate-400">
+                              Sell quantity
+                              <input
+                                type="number"
+                                min={1}
+                                max={listing.available}
+                                step={1}
+                                inputMode="numeric"
+                                value={draft}
+                                placeholder="0"
+                                className="mt-1 block w-full rounded-md border border-white/15 bg-slate-900 px-2 py-1.5 font-mono text-xs normal-case tracking-normal text-white"
+                                onChange={(event) =>
+                                  setSaleQuantities((current) => ({
+                                    ...current,
+                                    [listing.commodity]: event.target.value,
+                                  }))
+                                }
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              className={`${button} px-2 py-1.5 text-[11px]`}
+                              disabled={listing.available < 1}
+                              onClick={() => {
+                                setSaleQuantities((current) => ({
+                                  ...current,
+                                  [listing.commodity]: "",
+                                }));
+                                setMarketMessage(
+                                  `${listing.available} ${listing.name} retained in owned storage.`,
+                                );
+                              }}
+                            >
+                              Retain all
+                            </button>
+                            <button
+                              type="submit"
+                              className={`${button} border-emerald-300/30 bg-emerald-400/10 px-3 py-1.5 text-[11px] text-emerald-100`}
+                              disabled={productionBusy || !validQuantity}
+                            >
+                              Sell
+                            </button>
+                          </div>
+                          {requested > listing.available && (
+                            <p className="mt-2 text-[10px] text-red-300">
+                              Only {listing.available} units are available in owned storage.
+                            </p>
+                          )}
+                          <div className="mt-2 flex flex-wrap gap-1 border-t border-white/10 pt-2">
+                            {canProcess && (
+                              <button
+                                type="button"
+                                className={`${button} px-2 py-1 text-[10px]`}
+                                onClick={() => processStock(listing.commodity)}
+                              >
+                                Process stock
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className={`${button} px-2 py-1 text-[10px]`}
+                              onClick={() => buildMoreProduction(listing.commodity)}
+                            >
+                              Build more
+                            </button>
+                          </div>
+                        </form>
+                      );
+                    })()}
                     <dl className="mt-3 grid grid-cols-3 gap-1 border-t border-white/10 pt-2 text-center text-[10px]">
                       {[
                         ["Recent supply", listing.recentSupply],
@@ -1204,6 +1379,28 @@ export default function WorldMap({
                 <p className="mt-3 text-xs text-amber-100" aria-live="polite">
                   {marketMessage}
                 </p>
+              )}
+              {lastMarketSale && (
+                <dl className="mt-3 grid grid-cols-2 gap-2 rounded-lg border border-emerald-300/20 bg-emerald-400/5 p-3 text-[10px]">
+                  <div>
+                    <dt className="text-slate-500">Last actual revenue</dt>
+                    <dd className="mt-0.5 font-mono text-emerald-200">
+                      {money(lastMarketSale.revenueCents)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-slate-500">Accepted sale</dt>
+                    <dd className="mt-0.5 text-slate-200">
+                      {lastMarketSale.quantity} {commodityDefinitions[lastMarketSale.commodity].name} at {money(lastMarketSale.unitPriceCents)}
+                    </dd>
+                  </div>
+                  <div className="col-span-2">
+                    <dt className="text-slate-500">Stockpile remaining</dt>
+                    <dd className="mt-0.5 text-sky-200">
+                      {lastMarketSale.remainingInventory} {commodityDefinitions[lastMarketSale.commodity].name} retained in the Warehouse
+                    </dd>
+                  </div>
+                </dl>
               )}
               <div className="mt-5">
                 <p className="text-[10px] uppercase tracking-[0.18em] text-amber-200">
