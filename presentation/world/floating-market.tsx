@@ -173,7 +173,7 @@ export function FloatingMarket({
         <span className="text-right font-mono text-[10px]">
           {money(listing.priceCents)}
           <span
-            className={`ml-1 ${listing.trendPercent > 0 ? "text-rose-300" : listing.trendPercent < 0 ? "text-emerald-300" : "text-slate-500"}`}
+            className={`ml-1 ${listing.trendPercent > 0 ? "text-emerald-300" : listing.trendPercent < 0 ? "text-rose-300" : "text-slate-500"}`}
           >
             {listing.trendPercent > 0 ? "+" : ""}
             {listing.trendPercent.toFixed(1)}%
@@ -294,7 +294,7 @@ export function FloatingMarket({
                   {money(selectedListing.priceCents)}
                 </span>
                 <span
-                  className={`text-xs ${selectedListing.trendPercent > 0 ? "text-rose-300" : selectedListing.trendPercent < 0 ? "text-emerald-300" : "text-slate-500"}`}
+                  className={`text-xs ${selectedListing.trendPercent > 0 ? "text-emerald-300" : selectedListing.trendPercent < 0 ? "text-rose-300" : "text-slate-500"}`}
                 >
                   {selectedListing.trendPercent > 0 ? "+" : ""}
                   {selectedListing.trendPercent.toFixed(1)}%

@@ -1395,7 +1395,7 @@ export default function WorldMap({
                           {money(listing.priceCents)}
                         </span>
                         <span
-                          className={`text-[10px] ${listing.trendPercent > 0 ? "text-red-300" : listing.trendPercent < 0 ? "text-emerald-300" : "text-slate-400"}`}
+                          className={`text-[10px] ${listing.trendPercent > 0 ? "text-emerald-300" : listing.trendPercent < 0 ? "text-red-300" : "text-slate-400"}`}
                         >
                           {listing.trendPercent > 0
                             ? "▲"
@@ -2838,7 +2838,7 @@ export default function WorldMap({
                     {money(selectedMarketListing.priceCents)}
                   </span>
                   <span
-                    className={`text-sm ${selectedMarketListing.trendPercent > 0 ? "text-red-300" : selectedMarketListing.trendPercent < 0 ? "text-emerald-300" : "text-slate-400"}`}
+                    className={`text-sm ${selectedMarketListing.trendPercent > 0 ? "text-emerald-300" : selectedMarketListing.trendPercent < 0 ? "text-red-300" : "text-slate-400"}`}
                   >
                     {selectedMarketListing.trendPercent > 0
                       ? "▲"
