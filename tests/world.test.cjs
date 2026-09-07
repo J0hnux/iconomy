@@ -2847,3 +2847,25 @@ test("regional player commands reject impossible routes and stale prices without
   assert.equal(stale.status, 409);
   assert.deepEqual(simulation.exportSave(), saved);
 });
+
+test("compact browser saves round-trip exact simulation state and remain below local storage scale", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const {
+    serializeLocalSave,
+    deserializeLocalSave,
+  } = require("../presentation/world/local-save-storage.ts");
+  const start = 40_000;
+  const simulation = new LocalGameSimulation(createStartingWorld(), start);
+  simulation.read(start + 4 * 60 * 60_000);
+  const save = simulation.exportSave();
+  const plain = JSON.stringify(save);
+  const compact = serializeLocalSave(save);
+  assert.deepEqual(deserializeLocalSave(compact), save);
+  assert.deepEqual(deserializeLocalSave(plain), save);
+  assert.ok(compact.length < plain.length * 0.4);
+  assert.ok(compact.length < 4_000_000);
+  assert.doesNotThrow(() => LocalGameSimulation.fromSave(deserializeLocalSave(compact)));
+});

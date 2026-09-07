@@ -311,6 +311,10 @@ For verification, advance one NPC period and inspect `regionalLogistics.shipment
 
 For verification, open **Regions**, sort regional Food quotes visually, and create a shipment from a cheaper city to a higher-price destination. Accelerate simulation until it arrives and compare Estimated with Actual in **Your shipments**. Then create a route whose estimate is negative and confirm it is accepted, settles at the live destination price, and explains the loss. Import Iron or Iron Tools into Novagrad, then use **Inspect local production** to compare that landed cost with staffing an Iron Mine or Workshop.
 
+### Browser save storage
+
+Autosaves use a compact version-1 storage envelope. Market observations are stored as numeric tuples and repeated price-explanation strings use a shared dictionary, while loading reconstructs the unchanged simulation save shape. Existing plain JSON version-1 saves still load and migrate to the compact format on their next autosave. If browser storage is unavailable or genuinely full, the simulation continues in memory and the HUD reports that newer progress is not being saved instead of throwing from the game loop.
+
 ## Run and verify
 
 ```bash

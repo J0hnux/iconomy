@@ -70,6 +70,7 @@ import {
 } from "./price-chart";
 import { FloatingMarket } from "./floating-market";
 import { RegionalTrader } from "./regional-trader";
+import { deserializeLocalSave, serializeLocalSave } from "./local-save-storage";
 
 const button =
   "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-amber-200 disabled:opacity-30";
@@ -172,6 +173,8 @@ export default function WorldMap({
   const [lastMarketSale, setLastMarketSale] =
     useState<MarketSaleReceipt | null>(null);
   const [regionalTradeMessage, setRegionalTradeMessage] = useState<string | null>(null);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const saveFailedRef = useRef(false);
   const [simulationSpeed, setSimulationSpeed] = useState<SimulationSpeed>(1);
   const drag = useRef<{
     id: number;
@@ -227,10 +230,25 @@ export default function WorldMap({
   }, []);
 
   const persistSimulation = useCallback((simulation: LocalGameSimulation) => {
-    window.localStorage.setItem(
-      localSaveKey,
-      JSON.stringify(simulation.exportSave()),
-    );
+    try {
+      window.localStorage.setItem(
+        localSaveKey,
+        serializeLocalSave(simulation.exportSave()),
+      );
+      if (saveFailedRef.current) {
+        saveFailedRef.current = false;
+        setSaveMessage(null);
+      }
+    } catch (error) {
+      if (!saveFailedRef.current) {
+        saveFailedRef.current = true;
+        setSaveMessage(
+          error instanceof DOMException && error.name === "QuotaExceededError"
+            ? "Autosave storage is full. The game is still running, but newer progress is not saved."
+            : "Autosave is unavailable. The game is still running in this tab.",
+        );
+      }
+    }
   }, []);
   const currentSimulationTime = useCallback(() => {
     const now = Date.now();
@@ -346,7 +364,7 @@ export default function WorldMap({
     const saved = window.localStorage.getItem(localSaveKey);
     try {
       simulation = saved
-        ? LocalGameSimulation.fromSave(JSON.parse(saved) as unknown)
+        ? LocalGameSimulation.fromSave(deserializeLocalSave(saved))
         : new LocalGameSimulation(initialWorld, Date.now());
     } catch {
       window.localStorage.removeItem(localSaveKey);
@@ -869,6 +887,11 @@ export default function WorldMap({
             : ""}
           {tool === "build" ? "Build tool active" : "Local session"}
         </span>
+        {saveMessage && (
+          <span className="rounded-lg border border-amber-300/30 bg-amber-300/10 px-3 py-1.5 text-xs text-amber-100" role="status">
+            {saveMessage}
+          </span>
+        )}
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
         <PlayerHud
