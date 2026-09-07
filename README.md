@@ -403,6 +403,17 @@ For verification, select the Farm and read the two options side by side. Upgradi
 
 For verification, watch a Farm reach full storage and stall under Manual. Set it to Continuous and accelerate time: production no longer stalls, crops reach the warehouse, and the price falls steadily. Switch back to Manual, let stock build at the site, and watch the price recover before dispatching by hand into it. Set a second producer to When full and compare the stepped price pattern against the smoother continuous one.
 
+## Milestone 28.6: settlement tiers and development goals
+
+- The settlement holds a development standing of Hamlet, Village, Town, or Industrial City, so the player always knows what the settlement currently is and what it would take to advance.
+- The standing is derived from current conditions on every read. There is no stored level and nothing to increment, and nothing about it reaches the save. It summarises the economy and never substitutes for it.
+- Each tier lists named requirements with their current value and target: population, housing capacity, food supply, workers employed, industries staffed, regional deliveries, and industrialised sites for the highest tier. There is deliberately no aggregate score behind them, in the same spirit as the migration signals.
+- Two requirements measure a working economy rather than a built one. Industries staffed counts distinct commodities produced by sites that actually have workers, and industrialised sites counts upgraded sites that are actually operating, so neither can be satisfied by capital left idle.
+- Because the standing is derived, a settlement that loses population or food security falls back to a lower tier, and the requirements it now fails are shown. A lost Town is a real consequence.
+- Reaching a tier unlocks nothing. Gating buildings or recipes behind progression is a separate decision that this milestone deliberately leaves open.
+
+For verification, read the standing in the player panel: a new settlement is a Hamlet needing two more citizens for Village. Give its Farm a standing delivery order, and once food supply holds at full the settlement becomes a Village with five named requirements listed toward Town. Build houses and staff another industry to close them. Then set the Farm back to manual delivery, let the settlement starve, and watch the standing fall back with the failed requirements named.
+
 ## Run and verify
 
 ```bash

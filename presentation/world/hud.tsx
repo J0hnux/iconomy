@@ -71,6 +71,7 @@ export function PlayerHud({
             ],
             ["Company", "Novagrad enterprise"],
             ["City", world.settlement?.name ?? "Unsettled"],
+            ["Standing", snapshot?.development.tierName ?? "—"],
             [
               "Population",
               snapshot?.population.totalPopulation ??
@@ -148,6 +149,36 @@ export function PlayerHud({
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+        {snapshot?.development && (
+          <div className="mt-3 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5">
+            <p className="text-[9px] uppercase tracking-wide text-slate-500">
+              {snapshot.development.nextTierName
+                ? `Toward ${snapshot.development.nextTierName}`
+                : "Fully developed"}
+            </p>
+            {snapshot.development.unmetRequirements.length === 0 ? (
+              <p className="mt-1 text-[10px] leading-4 text-emerald-300">
+                {snapshot.development.nextTierName
+                  ? `Every requirement for ${snapshot.development.nextTierName} is met.`
+                  : `${snapshot.development.tierName} is the highest standing.`}
+              </p>
+            ) : (
+              <ul className="mt-1 space-y-1 text-[10px] leading-4">
+                {snapshot.development.unmetRequirements.map((requirement) => (
+                  <li
+                    key={requirement.id}
+                    className="flex justify-between gap-2 text-slate-300"
+                  >
+                    <span className="text-slate-400">{requirement.label}</span>
+                    <span className="font-mono text-amber-200">
+                      {requirement.current} / {requirement.target}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
         <p className="mt-3 text-[10px] leading-4 text-slate-500">

@@ -5777,3 +5777,244 @@ test("a dispatch policy persists and legacy saves keep manual delivery", () => {
   assert.equal(rejected.ok, false);
   assert.equal(rejected.status, 400);
 });
+
+const developmentConditions = (overrides) => ({
+  population: 12,
+  housingCapacity: 12,
+  foodSupplyPercent: 100,
+  employedWorkers: 5,
+  sites: [
+    { output: "crops", paused: false, assignedWorkers: 2, tier: "primitive" },
+    { output: "stone", paused: false, assignedWorkers: 3, tier: "primitive" },
+  ],
+  arrivedPlayerDeliveries: 0,
+  ...overrides,
+});
+
+test("tier targets rise monotonically so tiers can be judged in order", () => {
+  const {
+    developmentPolicy,
+    settlementTiers,
+    developmentRequirementIds,
+  } = require("../world/domain/development.ts");
+  assert.deepEqual(settlementTiers, [
+    "hamlet",
+    "village",
+    "town",
+    "industrial_city",
+  ]);
+  // Hamlet is the floor: it asks for nothing, so a settlement always has it.
+  assert.deepEqual(developmentPolicy.hamlet, {});
+  for (const id of developmentRequirementIds) {
+    let previous = 0;
+    for (const tier of settlementTiers) {
+      const target = developmentPolicy[tier][id];
+      if (target === undefined) continue;
+      assert.ok(
+        target >= previous,
+        `${id} target fell from ${previous} to ${target} at ${tier}`,
+      );
+      previous = target;
+    }
+  }
+});
+
+test("the tier is derived from named conditions with no aggregate score", () => {
+  const {
+    describeSettlementDevelopment,
+    developmentPolicy,
+  } = require("../world/domain/development.ts");
+
+  // A settlement meeting nothing is a Hamlet, and the gap is stated plainly.
+  const bare = describeSettlementDevelopment(
+    developmentConditions({ population: 4, foodSupplyPercent: 0, employedWorkers: 0, sites: [] }),
+  );
+  assert.equal(bare.tier, "hamlet");
+  assert.equal(bare.nextTier, "village");
+  assert.ok(bare.unmetRequirements.length > 0);
+  for (const requirement of bare.unmetRequirements) {
+    assert.equal(requirement.met, false);
+    assert.ok(requirement.current < requirement.target);
+    assert.ok(requirement.label.length > 0);
+  }
+
+  // Meeting every Village target advances exactly one tier, not further.
+  const village = describeSettlementDevelopment(developmentConditions());
+  assert.equal(village.tier, "village");
+  assert.equal(village.nextTier, "town");
+  assert.ok(
+    village.unmetRequirements.some(
+      (requirement) => requirement.id === "housing",
+    ),
+  );
+
+  // A single unmet requirement is enough to hold the settlement back.
+  const oneShort = describeSettlementDevelopment(
+    developmentConditions({ population: developmentPolicy.village.population - 1 }),
+  );
+  assert.equal(oneShort.tier, "hamlet");
+  assert.deepEqual(
+    oneShort.unmetRequirements.map((requirement) => requirement.id),
+    ["population"],
+  );
+
+  // Every tier is reported with its own requirements, so nothing is hidden.
+  assert.equal(village.tiers.length, 4);
+  assert.equal(village.tiers[0].met, true);
+  assert.equal(village.tiers[1].met, true);
+  assert.equal(village.tiers[2].met, false);
+});
+
+test("production breadth counts staffed industries, not built ones", () => {
+  const {
+    staffedIndustryBreadth,
+    industrialisedSiteCount,
+  } = require("../world/domain/development.ts");
+  const sites = [
+    { output: "crops", paused: false, assignedWorkers: 2, tier: "improved" },
+    { output: "stone", paused: false, assignedWorkers: 0, tier: "primitive" },
+    { output: "wood", paused: true, assignedWorkers: 0, tier: "primitive" },
+    { output: "crops", paused: false, assignedWorkers: 1, tier: "primitive" },
+  ];
+  // Unstaffed and paused sites do not count, and duplicates count once.
+  assert.equal(staffedIndustryBreadth(sites), 1);
+  assert.equal(
+    staffedIndustryBreadth([
+      ...sites,
+      { output: "iron_ore", paused: false, assignedWorkers: 3, tier: "primitive" },
+    ]),
+    2,
+  );
+  assert.equal(staffedIndustryBreadth([]), 0);
+  // An upgraded site counts only while it is actually operating, so the
+  // requirement cannot be satisfied by capital left on a shelf.
+  assert.equal(industrialisedSiteCount(sites), 1);
+  assert.equal(
+    industrialisedSiteCount([
+      { output: "stone", paused: false, assignedWorkers: 0, tier: "improved" },
+      { output: "wood", paused: true, assignedWorkers: 2, tier: "improved" },
+    ]),
+    0,
+  );
+});
+
+test("the highest tier requires industrialisation and trade", () => {
+  const {
+    describeSettlementDevelopment,
+    developmentPolicy,
+  } = require("../world/domain/development.ts");
+  const industrial = developmentPolicy.industrial_city;
+  const capable = developmentConditions({
+    population: industrial.population,
+    housingCapacity: industrial.housing,
+    employedWorkers: industrial.employment,
+    arrivedPlayerDeliveries: industrial.trade,
+    sites: [
+      { output: "crops", paused: false, assignedWorkers: 1, tier: "improved" },
+      { output: "stone", paused: false, assignedWorkers: 1, tier: "primitive" },
+      { output: "wood", paused: false, assignedWorkers: 1, tier: "primitive" },
+      { output: "iron_ore", paused: false, assignedWorkers: 1, tier: "primitive" },
+    ],
+  });
+  assert.equal(describeSettlementDevelopment(capable).tier, "industrial_city");
+  assert.equal(describeSettlementDevelopment(capable).nextTier, null);
+  assert.deepEqual(describeSettlementDevelopment(capable).unmetRequirements, []);
+
+  // Remove the industrialised site and the top tier is lost.
+  const primitiveOnly = describeSettlementDevelopment({
+    ...capable,
+    sites: capable.sites.map((site) => ({ ...site, tier: "primitive" })),
+  });
+  assert.equal(primitiveOnly.tier, "town");
+  assert.deepEqual(
+    primitiveOnly.unmetRequirements.map((requirement) => requirement.id),
+    ["industrialisation"],
+  );
+
+  // Remove the trade record and the settlement drops further still.
+  const untraded = describeSettlementDevelopment({
+    ...capable,
+    arrivedPlayerDeliveries: 0,
+  });
+  assert.equal(untraded.tier, "village");
+});
+
+test("a settlement that loses its economy falls back a tier", () => {
+  const {
+    describeSettlementDevelopment,
+  } = require("../world/domain/development.ts");
+  const village = describeSettlementDevelopment(developmentConditions());
+  assert.equal(village.tier, "village");
+
+  // Losing food security alone is enough to lose the standing.
+  const starving = describeSettlementDevelopment(
+    developmentConditions({ foodSupplyPercent: 0 }),
+  );
+  assert.equal(starving.tier, "hamlet");
+  assert.ok(
+    starving.unmetRequirements.some(
+      (requirement) => requirement.id === "foodSecurity",
+    ),
+  );
+
+  // So is losing population. Regression uses the same path as progress.
+  const emptied = describeSettlementDevelopment(
+    developmentConditions({ population: 3 }),
+  );
+  assert.equal(emptied.tier, "hamlet");
+  assert.deepEqual(
+    describeSettlementDevelopment(developmentConditions()),
+    village,
+    "the same conditions always give the same tier",
+  );
+});
+
+test("the settlement tier is derived on every read and never persisted", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+
+  // The starting settlement is a Hamlet with a single stated goal.
+  const start = simulation.read(70_000).economy;
+  assert.equal(start.development.tier, "hamlet");
+  assert.equal(start.development.nextTier, "village");
+  assert.ok(start.development.unmetRequirements.length > 0);
+  // It reports real measured values, not placeholders.
+  const populationGoal = start.development.tiers
+    .find((tier) => tier.tier === "village")
+    .requirements.find((requirement) => requirement.id === "population");
+  assert.equal(populationGoal.current, start.population.totalPopulation);
+
+  // Nothing about the tier reaches the save.
+  const save = simulation.exportSave();
+  assert.equal("development" in save, false);
+  assert.equal(JSON.stringify(save).includes('"tierName"'), false);
+
+  // Delivering food advances the settlement using existing verbs only.
+  const fed = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const farm = fed.read(70_000).economy.sites.find(
+    (site) => site.type === "farm",
+  );
+  fed.execute(
+    {
+      type: "set_dispatch_policy",
+      buildingId: farm.buildingId,
+      policy: "when_full",
+    },
+    70_000,
+  );
+  const advanced = fed.read(400_000).economy;
+  assert.equal(advanced.development.tier, "village");
+  assert.equal(advanced.development.nextTier, "town");
+
+  // A restored save derives the same tier without storing it.
+  const restored = LocalGameSimulation.fromSave(
+    JSON.parse(JSON.stringify(fed.exportSave())),
+  );
+  assert.equal(
+    restored.read(400_000).economy.development.tier,
+    advanced.development.tier,
+  );
+});

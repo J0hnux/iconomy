@@ -74,6 +74,7 @@ import {
   type MigrationResult,
 } from "../domain/population";
 import { describeLabor, validateLaborAssignment } from "../domain/labor";
+import { describeSettlementDevelopment } from "../domain/development";
 import { regionalSupplyWeightedPriceCents } from "../domain/market-intelligence";
 import {
   buildCompetitionSnapshot,
@@ -2224,6 +2225,17 @@ export class LocalGameSimulation {
         events: this.state.events.slice(-12).reverse(),
       },
       marketIntelligence: intelligence,
+      development: describeSettlementDevelopment({
+        population: population.totalPopulation,
+        housingCapacity: population.housingCapacity,
+        foodSupplyPercent: population.foodSupplyPercent,
+        employedWorkers: labor.assignedWorkers,
+        sites,
+        arrivedPlayerDeliveries: this.state.regionalShipments.filter(
+          (shipment) =>
+            shipment.owner === "player" && shipment.status === "arrived",
+        ).length,
+      }),
       competition: buildCompetitionSnapshot({
         updatedAt: this.state.simulationTime,
         periods: this.state.industryPeriods,
