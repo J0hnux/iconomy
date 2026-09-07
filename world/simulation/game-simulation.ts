@@ -59,9 +59,12 @@ import {
   describeFoodNeed,
   describePopulation,
   isFoodConsumptionResult,
+  isMigrationResult,
   populationPolicy,
+  resolveMigration,
   workingAgePopulation,
   type FoodConsumptionResult,
+  type MigrationResult,
 } from "../domain/population";
 import { describeLabor, validateLaborAssignment } from "../domain/labor";
 import { regionalSupplyWeightedPriceCents } from "../domain/market-intelligence";
@@ -227,6 +230,8 @@ export type LocalSimulationSaveV1 = Readonly<{
   nextRegionalShipment?: number;
   industryPeriods?: readonly IndustryPeriodRecord[];
   pendingPlayerProduction?: Readonly<Record<Commodity, number>>;
+  migrationUpdatedAt?: number;
+  lastMigration?: MigrationResult | null;
 }>;
 
 type MutableSimulationState = {
@@ -255,6 +260,8 @@ type MutableSimulationState = {
   nextRegionalShipment: number;
   industryPeriods: IndustryPeriodRecord[];
   pendingPlayerProduction: Record<Commodity, number>;
+  migrationUpdatedAt: number;
+  lastMigration: MigrationResult | null;
 };
 
 export function createStartingWorld() {
@@ -377,6 +384,13 @@ function isLocalSimulationSaveV1(
         value.industryPeriods.some(
           (record) => record.time > (value.simulationTime as number),
         ))) ||
+    (value.migrationUpdatedAt !== undefined &&
+      (!Number.isSafeInteger(value.migrationUpdatedAt) ||
+        (value.migrationUpdatedAt as number) >
+          (value.simulationTime as number))) ||
+    (value.lastMigration !== undefined &&
+      value.lastMigration !== null &&
+      !isMigrationResult(value.lastMigration)) ||
     (value.pendingPlayerProduction !== undefined &&
       (!isRecord(value.pendingPlayerProduction) ||
         !commodityIds.every((commodity) =>
@@ -521,6 +535,16 @@ export class LocalGameSimulation {
         pendingPlayerProduction: normalizeCommodityInventory(
           restored.pendingPlayerProduction ?? {},
         ),
+        migrationUpdatedAt:
+          restored.migrationUpdatedAt ?? restored.simulationTime,
+        lastMigration: restored.lastMigration
+          ? {
+              ...restored.lastMigration,
+              signals: restored.lastMigration.signals.map((signal) => ({
+                ...signal,
+              })),
+            }
+          : null,
       };
       for (const building of this.producers) {
         const existing = this.state.productionStates.get(building.id);
@@ -687,6 +711,8 @@ export class LocalGameSimulation {
       nextRegionalShipment: 1,
       industryPeriods: [],
       pendingPlayerProduction: commodityRecord(0),
+      migrationUpdatedAt: startTime,
+      lastMigration: null,
     };
   }
 
@@ -796,6 +822,15 @@ export class LocalGameSimulation {
         cloneIndustryPeriodRecord,
       ),
       pendingPlayerProduction: { ...this.state.pendingPlayerProduction },
+      migrationUpdatedAt: this.state.migrationUpdatedAt,
+      lastMigration: this.state.lastMigration
+        ? {
+            ...this.state.lastMigration,
+            signals: this.state.lastMigration.signals.map((signal) => ({
+              ...signal,
+            })),
+          }
+        : null,
     };
   }
 
@@ -848,12 +883,15 @@ export class LocalGameSimulation {
             ),
           Number.POSITIVE_INFINITY,
         );
+      const migrationTime =
+        this.state.migrationUpdatedAt + populationPolicy.migration.periodMs;
       const boundaryTime = Math.min(
         arrivalTime,
         consumptionTime,
         marketTime,
         npcCityTime,
         regionalArrivalTime,
+        migrationTime,
       );
       if (boundaryTime > simulationTime) break;
       this.advanceProducersTo(boundaryTime);
@@ -911,6 +949,7 @@ export class LocalGameSimulation {
           });
         }
       }
+      if (migrationTime === boundaryTime) this.advanceMigration(boundaryTime);
       if (npcCityTime === boundaryTime) {
         this.state.npcCities = advanceNpcCities(this.state.npcCities);
         this.state.npcCitiesUpdatedAt = boundaryTime;
@@ -1785,6 +1824,97 @@ export class LocalGameSimulation {
    * The regional price level for each commodity, taken from the NPC cities
    * only. Novagrad is excluded so its own price never feeds back into itself.
    */
+  /** Open positions across staffed, unpaused player production sites. */
+  private openPositions() {
+    return this.producers.reduce((total, building) => {
+      const state = this.state.productionStates.get(building.id);
+      if (!state || (state.paused ?? false)) return total;
+      const recipe = recipeForState(state, building.type);
+      return total + Math.max(0, recipe.requiredWorkers - state.assignedWorkers);
+    }, 0);
+  }
+
+  private employedWorkers() {
+    return [...this.state.productionStates.values()].reduce(
+      (total, state) => total + state.assignedWorkers,
+      0,
+    );
+  }
+
+  /**
+   * Applies one aggregate migration period.
+   *
+   * Population is owned by the settlement, so the resolver only reports a
+   * change and this method commits it. A shrinking population shrinks the
+   * working-age workforce, so assignments are trimmed deterministically to
+   * preserve the invariant that assigned workers never exceed the workforce.
+   */
+  private advanceMigration(time: number) {
+    this.state.migrationUpdatedAt = time;
+    const settlement = this.state.world.settlement;
+    if (!settlement) return;
+    const employed = this.employedWorkers();
+    const population = describePopulation(
+      this.state.world,
+      employed,
+      describeFoodNeed(
+        this.state.warehouseInventory,
+        settlement.population,
+        this.state.lastFoodConsumption,
+      ),
+    );
+    const migration = resolveMigration({
+      population: settlement.population,
+      housingCapacity: population.housingCapacity,
+      workingAgePopulation: population.workingAgePopulation,
+      employedWorkers: employed,
+      openPositions: this.openPositions(),
+      foodSupplyPercent: population.foodSupplyPercent,
+    });
+    this.state.lastMigration = migration;
+    if (migration.netMigration === 0) return;
+    this.state.world = {
+      ...this.state.world,
+      settlement: { ...settlement, population: migration.population },
+    };
+    this.state.revision++;
+    this.releaseWorkersBeyondWorkforce();
+    this.addEvent(
+      time,
+      "production",
+      migration.netMigration > 0
+        ? `${migration.arrivals} ${migration.arrivals === 1 ? "citizen" : "citizens"} moved to ${settlement.name}; population is now ${migration.population}.`
+        : `${migration.departures} ${migration.departures === 1 ? "citizen" : "citizens"} left ${settlement.name}; population is now ${migration.population}.`,
+    );
+  }
+
+  /** Trims assignments, lowest priority first, when the workforce shrinks. */
+  private releaseWorkersBeyondWorkforce() {
+    const workforce = workingAgePopulation(
+      this.state.world.settlement?.population ?? 0,
+    );
+    let assigned = this.employedWorkers();
+    if (assigned <= workforce) return;
+    const ordered = [...this.producers].sort((first, second) =>
+      compareProductionPriority(
+        this.state.productionStates.get(second.id) ?? { buildingId: second.id },
+        this.state.productionStates.get(first.id) ?? { buildingId: first.id },
+      ),
+    );
+    for (const building of ordered) {
+      if (assigned <= workforce) break;
+      const state = this.state.productionStates.get(building.id);
+      if (!state || state.assignedWorkers === 0) continue;
+      const release = Math.min(state.assignedWorkers, assigned - workforce);
+      this.state.productionStates.set(building.id, {
+        ...state,
+        assignedWorkers: state.assignedWorkers - release,
+        updatedAt: this.state.simulationTime,
+      });
+      assigned -= release;
+    }
+  }
+
   private regionalReferencePrices() {
     const observations = this.state.npcCities.flatMap(npcCityMarketObservations);
     const reference = commodityRecord(0);
@@ -1871,6 +2001,8 @@ export class LocalGameSimulation {
         totalPopulation,
         this.state.lastFoodConsumption,
       ),
+      this.openPositions(),
+      this.state.lastMigration,
     );
     const listings = this.marketListings();
     const intelligence = this.marketIntelligence(listings);

@@ -353,6 +353,20 @@ For verification, open **Company** and accelerate to the next 60-second NPC peri
 
 For verification, open the market chart for Crops and accelerate time. The price should step up on each household consumption cycle as unmet demand registers, then decay back, rather than holding a single value. Compare Novagrad's Crops price with Greenvale's in the Regions view: as Greenvale accumulates a surplus its price falls and Novagrad's follows part of the way down, never all the way.
 
+## Milestone 26: population growth and migration
+
+- Population is no longer a constant. It responds to food supply, housing, and job availability on an explicit 120-second migration cadence, a multiple of the consumption period so food security has settled before anyone decides to move.
+- Movement is aggregate and deterministic. No individual migrant is simulated and no randomness is used, so the same conditions always produce the same arrivals and departures.
+- Three named signals decide, each with its own threshold in the population policy, and there is deliberately no single happiness score. Food attracts when supply is secure and repels when it is short, housing reports the room available, and employment attracts when positions are open and repels when much of the workforce sits idle.
+- Food outweighs employment when it is short: an open position is no reason to stay somewhere with nothing to eat. Without that weighting the two would cancel and a famine could never empty a settlement.
+- Housing gates arrivals but never expels residents. A full settlement simply stops attracting newcomers.
+- Movement is capped per period and population never falls below the configured floor, so growth cannot run away and a settlement cannot be migrated out of existence.
+- A shrinking population shrinks the working-age workforce, so worker assignments are trimmed deterministically, lowest priority first, and assigned workers never exceed the workforce that exists.
+- The HUD reports open positions, net migration, arrivals and departures, and the reasons people are arriving or leaving, coloured by whether each condition attracts or repels. Population changes are also written to the economy log.
+- Migration state is stored with the simulation in compatible version-1 saves. Saves written before this milestone load and begin migrating.
+
+For verification, watch the HUD across the first two migration periods. A settlement with secure food, open positions, and spare housing should gain citizens and say why. Leave the food chain unstaffed and accelerate time: food supply falls, the food signal turns to repel, citizens leave, and the collapse stops at the population floor rather than reaching zero. Build houses to raise capacity and confirm growth resumes only while beds remain free.
+
 ## Run and verify
 
 ```bash

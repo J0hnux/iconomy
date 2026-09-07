@@ -721,6 +721,8 @@ test("population needs derive deterministically from authoritative world and eco
     employedWorkers: 5,
     unemployedWorkers: 1,
     housingCapacity: 12,
+    openPositions: 0,
+    lastMigration: null,
     foodRequired: 10,
     foodAvailable: 16,
     foodConsumed: 0,
@@ -734,9 +736,19 @@ test("population needs derive deterministically from authoritative world and eco
 
   const simulation = new LocalGameSimulation(startingWorld, 1_000);
   const initialEconomy = simulation.read(1_000).economy;
+  // Migration has not run yet at the start time, and the simulation reports
+  // the open positions its own sites currently advertise.
+  assert.equal(initialEconomy.population.lastMigration, null);
+  assert.ok(initialEconomy.population.openPositions > 0);
   assert.deepEqual(
     initialEconomy.population,
-    describePopulation(startingWorld, 5, foodNeed),
+    describePopulation(
+      startingWorld,
+      5,
+      foodNeed,
+      initialEconomy.population.openPositions,
+      null,
+    ),
   );
   const initialCropShipment = initialEconomy.logistics.shipments.find(
     (shipment) => shipment.cargo.commodity === "crops",
@@ -831,6 +843,9 @@ test("production advances from explicit simulation time and explains idle states
     employedWorkers: 6,
     unemployedWorkers: 0,
     housingCapacity: 12,
+    openPositions:
+      staffed.readModel.economy.population.openPositions,
+    lastMigration: null,
     foodRequired: 10,
     foodAvailable: 16,
     foodConsumed: 0,
@@ -2231,7 +2246,12 @@ test("timed household consumption is step-independent and survives save loading"
   assert.deepEqual(direct.exportSave(), stepped.exportSave());
   assert.equal(finalStep.logistics.warehouseInventory.food, 0);
   assert.equal(finalStep.logistics.warehouseInventory.crops, 0);
-  assert.equal(finalStep.population.foodRequired, 10);
+  // Population is no longer constant: food demand follows it.
+  assert.equal(
+    finalStep.population.foodRequired,
+    finalStep.population.totalPopulation,
+  );
+  assert.ok(finalStep.population.totalPopulation >= 10);
   assert.equal(finalStep.population.foodConsumed, 0);
   assert.equal(finalStep.population.foodSupplyPercent, 0);
 
@@ -4728,4 +4748,266 @@ test("connected pricing stays deterministic and step independent", () => {
       `${commodity} rose above its ceiling`,
     );
   }
+});
+
+const migrationConditions = (overrides) => ({
+  population: 10,
+  housingCapacity: 12,
+  workingAgePopulation: 6,
+  employedWorkers: 6,
+  openPositions: 0,
+  foodSupplyPercent: 100,
+  ...overrides,
+});
+
+test("migration answers to food, housing, and jobs as separate named signals", () => {
+  const {
+    resolveMigration,
+    populationPolicy,
+  } = require("../world/domain/population.ts");
+  const policy = populationPolicy.migration;
+
+  // Every factor reports its own signal, so no single hidden score decides.
+  const balanced = resolveMigration(migrationConditions());
+  assert.deepEqual(
+    balanced.signals.map((signal) => signal.factor),
+    ["food", "housing", "employment"],
+  );
+
+  // Food alone attracts when secure and repels when short.
+  const secure = resolveMigration(migrationConditions());
+  assert.ok(secure.arrivals > 0);
+  assert.equal(
+    secure.signals.find((signal) => signal.factor === "food").direction,
+    "attract",
+  );
+  const hungry = resolveMigration(
+    migrationConditions({ foodSupplyPercent: 0, openPositions: 0 }),
+  );
+  assert.ok(hungry.departures > 0);
+  assert.equal(
+    hungry.signals.find((signal) => signal.factor === "food").direction,
+    "repel",
+  );
+
+  // Jobs attract; a mostly idle workforce with no openings drives people away.
+  const hiring = resolveMigration(
+    migrationConditions({ foodSupplyPercent: 80, openPositions: 4 }),
+  );
+  assert.ok(hiring.arrivals > 0);
+  assert.equal(
+    hiring.signals.find((signal) => signal.factor === "employment").direction,
+    "attract",
+  );
+  const idle = resolveMigration(
+    migrationConditions({
+      foodSupplyPercent: 80,
+      employedWorkers: 0,
+      openPositions: 0,
+    }),
+  );
+  assert.ok(idle.departures > 0);
+  assert.equal(
+    idle.signals.find((signal) => signal.factor === "employment").direction,
+    "repel",
+  );
+
+  // Hunger outweighs an open position: a job is no reason to stay unfed.
+  const starvingButHiring = resolveMigration(
+    migrationConditions({ foodSupplyPercent: 0, openPositions: 5 }),
+  );
+  assert.ok(
+    starvingButHiring.departures > 0,
+    "famine must be able to empty a settlement that still has jobs",
+  );
+  assert.ok(policy.foodRepelWeight > policy.employmentAttractWeight);
+});
+
+test("housing gates arrivals without ever expelling residents", () => {
+  const { resolveMigration } = require("../world/domain/population.ts");
+
+  // Full housing stops growth.
+  const full = resolveMigration(
+    migrationConditions({ population: 12, housingCapacity: 12, openPositions: 4 }),
+  );
+  assert.equal(full.arrivals, 0);
+  assert.equal(full.housingHeadroom, 0);
+  assert.equal(
+    full.signals.find((signal) => signal.factor === "housing").direction,
+    "neutral",
+  );
+
+  // One free bed admits at most one newcomer.
+  const oneBed = resolveMigration(
+    migrationConditions({ population: 11, housingCapacity: 12, openPositions: 4 }),
+  );
+  assert.equal(oneBed.arrivals, 1);
+  assert.equal(oneBed.population, 12);
+
+  // Housing never causes departures on its own.
+  const overcrowded = resolveMigration(
+    migrationConditions({ population: 20, housingCapacity: 4, openPositions: 4 }),
+  );
+  assert.equal(overcrowded.departures, 0);
+  assert.equal(overcrowded.housingHeadroom, 0);
+});
+
+test("migration is bounded, deterministic, and arithmetically consistent", () => {
+  const {
+    resolveMigration,
+    populationPolicy,
+    isMigrationResult,
+  } = require("../world/domain/population.ts");
+  const policy = populationPolicy.migration;
+
+  const strong = resolveMigration(
+    migrationConditions({ population: 2, housingCapacity: 500, openPositions: 50 }),
+  );
+  assert.ok(strong.arrivals <= policy.maximumMovePerPeriod);
+  const collapse = resolveMigration(
+    migrationConditions({
+      population: 1,
+      foodSupplyPercent: 0,
+      employedWorkers: 0,
+      openPositions: 0,
+    }),
+  );
+  // A settlement is never migrated out of existence.
+  assert.equal(collapse.departures, 0);
+  assert.ok(collapse.population >= policy.minimumPopulation);
+
+  for (const result of [strong, collapse]) {
+    assert.equal(result.netMigration, result.arrivals - result.departures);
+    assert.ok(Number.isInteger(result.population) && result.population >= 0);
+    assert.ok(isMigrationResult(result));
+  }
+
+  // No randomness: identical conditions give identical movement.
+  assert.deepEqual(
+    resolveMigration(migrationConditions({ openPositions: 3 })),
+    resolveMigration(migrationConditions({ openPositions: 3 })),
+  );
+  assert.throws(
+    () => resolveMigration(migrationConditions({ population: -1 })),
+    RangeError,
+  );
+  assert.throws(
+    () => resolveMigration(migrationConditions({ employedWorkers: 99 })),
+    RangeError,
+  );
+});
+
+test("the settlement grows and shrinks on its own economic conditions", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const { populationPolicy } = require("../world/domain/population.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+
+  // No migration before the first period elapses.
+  assert.equal(simulation.read(60_000).economy.population.lastMigration, null);
+  assert.equal(simulation.read(60_000).economy.population.totalPopulation, 10);
+
+  // Food is secure and jobs are open, so citizens arrive.
+  const grown = simulation.read(121_000).economy.population;
+  assert.ok(grown.totalPopulation > 10);
+  assert.ok(grown.lastMigration.arrivals > 0);
+  assert.equal(grown.lastMigration.departures, 0);
+  assert.equal(
+    grown.totalPopulation,
+    grown.lastMigration.population,
+  );
+  // Growth stops at housing capacity.
+  assert.ok(grown.totalPopulation <= grown.housingCapacity);
+
+  // The starting settlement never staffs its food chain, so it starves and
+  // people leave; the collapse stops at the configured floor.
+  const starved = simulation.read(3_000_000).economy.population;
+  assert.ok(
+    starved.totalPopulation < grown.totalPopulation,
+    "a starving settlement must lose people",
+  );
+  assert.ok(
+    starved.totalPopulation >= populationPolicy.migration.minimumPopulation,
+  );
+  assert.ok(
+    starved.lastMigration.signals.some(
+      (signal) => signal.factor === "food" && signal.direction === "repel",
+    ),
+  );
+  // The economy log explains the change in plain terms.
+  const economy = simulation.read(3_000_000).economy;
+  assert.ok(
+    economy.market.events.some((event) => /left Novagrad/.test(event.message)) ||
+      economy.market.events.some((event) => /moved to Novagrad/.test(event.message)),
+  );
+});
+
+test("a shrinking workforce never leaves more workers assigned than exist", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const {
+    workingAgePopulation,
+  } = require("../world/domain/population.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  for (let time = 121_000; time <= 3_000_000; time += 120_000) {
+    const economy = simulation.read(time).economy;
+    const assigned = economy.sites.reduce(
+      (total, site) => total + site.assignedWorkers,
+      0,
+    );
+    const workforce = workingAgePopulation(economy.population.totalPopulation);
+    assert.ok(
+      assigned <= workforce,
+      `at t=${time}: ${assigned} assigned exceeds a workforce of ${workforce}`,
+    );
+    assert.equal(economy.labor.assignedWorkers, assigned);
+  }
+});
+
+test("population change is step independent and survives save loading", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const direct = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const stepped = new LocalGameSimulation(createStartingWorld(), 1_000);
+  for (let time = 40_000; time < 900_000; time += 40_000) stepped.read(time);
+  // Both must stand at the same instant before their states are comparable.
+  stepped.read(900_000);
+  direct.read(900_000);
+  assert.deepEqual(stepped.exportSave(), direct.exportSave());
+  assert.equal(
+    stepped.read(900_000).economy.population.totalPopulation,
+    direct.read(900_000).economy.population.totalPopulation,
+  );
+
+  // Migration state round-trips exactly.
+  const save = direct.exportSave();
+  assert.ok(Number.isSafeInteger(save.migrationUpdatedAt));
+  const restored = LocalGameSimulation.fromSave(
+    JSON.parse(JSON.stringify(save)),
+  );
+  assert.deepEqual(
+    restored.read(1_200_000).economy.population,
+    direct.read(1_200_000).economy.population,
+  );
+
+  // A save written before this milestone loads and starts migrating.
+  const legacy = JSON.parse(JSON.stringify(direct.exportSave()));
+  delete legacy.migrationUpdatedAt;
+  delete legacy.lastMigration;
+  const migrated = LocalGameSimulation.fromSave(legacy);
+  assert.equal(
+    migrated.read(legacy.simulationTime).economy.population.lastMigration,
+    null,
+  );
+  assert.ok(
+    migrated.read(legacy.simulationTime + 200_000).economy.population
+      .lastMigration !== null,
+    "a legacy save resumes migrating",
+  );
 });

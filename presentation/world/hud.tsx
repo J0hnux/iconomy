@@ -90,6 +90,19 @@ export function PlayerHud({
               snapshot ? `${snapshot.population.foodSupplyPercent}%` : "—",
             ],
             ["Main food", foodSources(snapshot)],
+            ["Open positions", snapshot?.population.openPositions ?? "—"],
+            [
+              "Net migration",
+              snapshot?.population.lastMigration
+                ? `${snapshot.population.lastMigration.netMigration > 0 ? "+" : ""}${snapshot.population.lastMigration.netMigration}`
+                : "—",
+            ],
+            [
+              "Arrivals / departures",
+              snapshot?.population.lastMigration
+                ? `${snapshot.population.lastMigration.arrivals} / ${snapshot.population.lastMigration.departures}`
+                : "—",
+            ],
           ].map(([label, value]) => (
             <div key={label} className="flex justify-between gap-2">
               <dt className="text-slate-400">{label}</dt>
@@ -97,6 +110,29 @@ export function PlayerHud({
             </div>
           ))}
         </dl>
+        {snapshot?.population.lastMigration && (
+          <div className="mt-3 rounded-lg bg-black/20 px-2 py-1.5">
+            <p className="text-[9px] uppercase tracking-wide text-slate-500">
+              Why people move
+            </p>
+            <ul className="mt-1 space-y-1 text-[10px] leading-4">
+              {snapshot.population.lastMigration.signals.map((signal) => (
+                <li
+                  key={signal.factor}
+                  className={
+                    signal.direction === "attract"
+                      ? "text-emerald-300"
+                      : signal.direction === "repel"
+                        ? "text-red-300"
+                        : "text-slate-400"
+                  }
+                >
+                  {signal.reason}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <p className="mt-3 text-[10px] leading-4 text-slate-500">
           *Cash + goods at current quotes. Buildings and land excluded.
         </p>
