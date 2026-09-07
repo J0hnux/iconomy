@@ -367,68 +367,13 @@ function produceAndConsume(city: NpcCityState): NpcCityState {
     inventory: household.inventory,
     recentProduction,
     recentConsumption,
-    imports: commodityRecord(0),
-    exports: commodityRecord(0),
+    imports: { ...city.imports },
+    exports: { ...city.exports },
   };
 }
 
 export function advanceNpcCities(cities: readonly NpcCityState[]): NpcCityState[] {
-  const next = cities.map(produceAndConsume).map((city) => ({
-    ...city,
-    inventory: { ...city.inventory },
-    imports: { ...city.imports },
-    exports: { ...city.exports },
-  }));
-  for (const commodity of commodityIds) {
-    const importBudget = new Map(next.map((city) => [city.id, city.tradeCapacity]));
-    const exportBudget = new Map(next.map((city) => [city.id, city.tradeCapacity]));
-    const recipients = [...next].sort((first, second) =>
-      first.id.localeCompare(second.id),
-    );
-    for (const recipient of recipients) {
-      let needed = Math.max(
-        0,
-        npcCityTargetStock(recipient, commodity) - recipient.inventory[commodity],
-      );
-      needed = Math.min(needed, importBudget.get(recipient.id) ?? 0);
-      while (needed > 0) {
-        const donor = [...next]
-          .filter(
-            (candidate) =>
-              candidate.id !== recipient.id &&
-              (exportBudget.get(candidate.id) ?? 0) > 0 &&
-              candidate.inventory[commodity] >
-                npcCityTargetStock(candidate, commodity),
-          )
-          .sort(
-            (first, second) =>
-              second.inventory[commodity] -
-                npcCityTargetStock(second, commodity) -
-                (first.inventory[commodity] -
-                  npcCityTargetStock(first, commodity)) ||
-              first.id.localeCompare(second.id),
-          )[0];
-        if (!donor) break;
-        const quantity = Math.min(
-          needed,
-          exportBudget.get(donor.id) ?? 0,
-          donor.inventory[commodity] - npcCityTargetStock(donor, commodity),
-        );
-        if (quantity <= 0) break;
-        (donor.inventory as Record<Commodity, number>)[commodity] -= quantity;
-        (recipient.inventory as Record<Commodity, number>)[commodity] += quantity;
-        (donor.exports as Record<Commodity, number>)[commodity] += quantity;
-        (recipient.imports as Record<Commodity, number>)[commodity] += quantity;
-        exportBudget.set(donor.id, (exportBudget.get(donor.id) ?? 0) - quantity);
-        importBudget.set(
-          recipient.id,
-          (importBudget.get(recipient.id) ?? 0) - quantity,
-        );
-        needed -= quantity;
-      }
-    }
-  }
-  return next.map((city) => ({
+  return cities.map(produceAndConsume).map((city) => ({
     ...city,
     localPrices: Object.fromEntries(
       commodityIds.map((commodity) => [
@@ -438,8 +383,8 @@ export function advanceNpcCities(cities: readonly NpcCityState[]): NpcCityState[
           commodity,
           city.inventory[commodity],
           city.localPrices[commodity],
-          city.recentProduction[commodity] + city.imports[commodity],
-          city.recentConsumption[commodity] + city.exports[commodity],
+          city.recentProduction[commodity],
+          city.recentConsumption[commodity],
         ),
       ]),
     ) as Record<Commodity, number>,

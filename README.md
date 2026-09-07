@@ -288,6 +288,29 @@ For gameplay verification, overproduce and dispatch Crops, then sell exact quant
 
 For verification, advance at least one NPC-city period and compare Crops in Greenvale with Ironhold, then compare Iron Ore in Ironhold with Greenvale. Inspect the saved `npcCities` snapshots to confirm production, consumption, inventories, matched imports and exports, and distinct prices. Advancing three periods in one read or three separate reads produces the same save.
 
+## Milestone 21: regional logistics and trade
+
+- NPC cities no longer balance regional goods through instant inventory transfers. A deterministic trade planner removes genuine surplus from an origin and creates a regional shipment, leaving the cargo in transit until its authoritative arrival time.
+- Every regional shipment records origin and destination city/position, commodity, quantity, capacity, logical distance, transport cost, departure and arrival simulation times, status, origin purchase price, estimated destination price, and estimated revenue and profit.
+- Capacity is limited by both cities and the regional shipment policy. Logical `x/y` distance determines travel time and per-unit transport cost; no renderer, animation, or wall-clock event can complete delivery.
+- Arrival deposits the cargo exactly once, records the destination import, and settles actual revenue and profit using the destination's current price. Production and consumption can change that price during transit, so estimated margin is not guaranteed.
+- Departures accumulate origin exports, arrivals accumulate destination imports, and the difference is represented by explicit in-transit cargo. Completed shipment history is bounded while all active shipments are retained.
+- Regional shipments and their sequence are optional additions to version 1 saves. Legacy saves begin with an empty regional ledger; new saves preserve active and settled cargo across reloads.
+- This milestone adds no regional trading controls. Milestone 22 must expose route selection, shipment creation, regional price comparison, and the risk of profitable or losing trades before another simulation milestone.
+
+For verification, advance one NPC period and inspect `regionalLogistics.shipments`. Confirm origin inventory falls at departure while destination inventory is unchanged, then advance to arrival and confirm destination inventory and imports rise once. Compare estimated and actual profit when the destination price changes during the journey. A single large time advance and equivalent incremental advances produce identical cities and shipments.
+
+## Milestone 22: regional trader gameplay
+
+- The global **Regions** view turns the existing NPC city and logistics simulation into a player-controlled exchange. The player chooses an origin, destination, commodity, and whole-unit quantity while comparing every region's current price and inventory.
+- Every route quote shows origin value or purchase cost, transport cost, current destination value, travel time, required upfront cash, and estimated profit. Distance drives both time and cost through the shared regional transport policy. Negative-margin routes remain valid so the player can make and understand poor trades.
+- Imports from an NPC city purchase genuine city inventory, pay purchase and transport costs at departure, travel in the authoritative shipment ledger, and enter the Novagrad Warehouse only at their simulation-time arrival. Imports are stored rather than automatically resold.
+- Exports remove genuine Novagrad Warehouse cargo and pay transport at departure. They sell automatically at the destination's live price on arrival, so actual revenue and realized profit may differ from the departure estimate.
+- The route panel compares importing with existing local recipes and links into the Milestone 16 labor and production controls. It presents the choice without selecting an optimum or creating a second production system.
+- Player shipment ownership, destination action, upfront cost, realized cash change, and active cargo are preserved in the version 1 save. Older Milestone 21 shipments remain loadable because the new fields are optional and default to NPC behavior.
+
+For verification, open **Regions**, sort regional Food quotes visually, and create a shipment from a cheaper city to a higher-price destination. Accelerate simulation until it arrives and compare Estimated with Actual in **Your shipments**. Then create a route whose estimate is negative and confirm it is accepted, settles at the live destination price, and explains the loss. Import Iron or Iron Tools into Novagrad, then use **Inspect local production** to compare that landed cost with staffing an Iron Mine or Workshop.
+
 ## Run and verify
 
 ```bash

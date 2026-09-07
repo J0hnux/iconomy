@@ -2433,7 +2433,7 @@ test("NPC city specializations use existing recipes and create distinct regional
   );
 });
 
-test("NPC intercity trade conserves goods while recording matched imports and exports", () => {
+test("NPC production and consumption conserve regional commodity inventories", () => {
   const {
     advanceNpcCities,
     createNpcCities,
@@ -2442,7 +2442,6 @@ test("NPC intercity trade conserves goods while recording matched imports and ex
   const { createStartingWorld } = require("../world/simulation/game-simulation.ts");
   const initial = createNpcCities(createStartingWorld());
   const advanced = advanceNpcCities(initial);
-  let traded = 0;
   for (const commodity of commodityIds) {
     const before = initial.reduce(
       (total, city) => total + city.inventory[commodity],
@@ -2460,19 +2459,187 @@ test("NPC intercity trade conserves goods while recording matched imports and ex
       (total, city) => total + city.inventory[commodity],
       0,
     );
-    const imported = advanced.reduce(
-      (total, city) => total + city.imports[commodity],
-      0,
-    );
-    const exported = advanced.reduce(
-      (total, city) => total + city.exports[commodity],
-      0,
-    );
     assert.equal(after, before + produced - consumed);
-    assert.equal(imported, exported);
-    traded += imported;
   }
-  assert.ok(traded > 0);
+});
+
+test("regional departures conserve cargo and derive capacity, cost, and time from distance", () => {
+  const {
+    advanceNpcCities,
+    createNpcCities,
+  } = require("../world/domain/npc-cities.ts");
+  const {
+    planRegionalShipments,
+    quoteRegionalTransport,
+  } = require("../world/domain/regional-logistics.ts");
+  const { commodityIds } = require("../world/domain/commodities.ts");
+  const { createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const cities = advanceNpcCities(createNpcCities(createStartingWorld()));
+  const plan = planRegionalShipments(cities, [], 61_000, 1);
+  assert.ok(plan.shipments.length > 0);
+  assert.equal(plan.nextShipmentSequence, plan.shipments.length + 1);
+  for (const commodity of commodityIds) {
+    const before = cities.reduce(
+      (total, city) => total + city.inventory[commodity],
+      0,
+    );
+    const heldByCities = plan.cities.reduce(
+      (total, city) => total + city.inventory[commodity],
+      0,
+    );
+    const inTransit = plan.shipments.reduce(
+      (total, shipment) =>
+        shipment.commodity === commodity ? total + shipment.quantity : total,
+      0,
+    );
+    assert.equal(heldByCities + inTransit, before);
+    for (const city of cities) {
+      const afterCity = plan.cities.find((candidate) => candidate.id === city.id);
+      const departed = plan.shipments.reduce(
+        (total, shipment) =>
+          shipment.origin.cityId === city.id &&
+          shipment.commodity === commodity
+            ? total + shipment.quantity
+            : total,
+        0,
+      );
+      assert.equal(
+        afterCity.inventory[commodity],
+        city.inventory[commodity] - departed,
+      );
+    }
+  }
+  for (const shipment of plan.shipments) {
+    const originBefore = cities.find(
+      (city) => city.id === shipment.origin.cityId,
+    );
+    const destinationBefore = cities.find(
+      (city) => city.id === shipment.destination.cityId,
+    );
+    const quote = quoteRegionalTransport(
+      originBefore,
+      destinationBefore,
+      shipment.quantity,
+    );
+    assert.equal(shipment.status, "in_transit");
+    assert.ok(shipment.quantity <= shipment.transportCapacity);
+    assert.equal(shipment.distanceTiles, quote.distanceTiles);
+    assert.equal(shipment.transportCostCents, quote.transportCostCents);
+    assert.equal(shipment.arrivalTime, shipment.departureTime + quote.travelTimeMs);
+    assert.equal(
+      shipment.estimatedProfitCents,
+      shipment.estimatedRevenueCents -
+        shipment.purchaseCostCents -
+      shipment.transportCostCents,
+    );
+  }
+  const exportedSincePlanning = plan.cities.reduce(
+    (total, city) => {
+      const before = cities.find((candidate) => candidate.id === city.id);
+      return (
+        total +
+        commodityIds.reduce(
+          (cityTotal, commodity) =>
+            cityTotal + city.exports[commodity] - before.exports[commodity],
+          0,
+        )
+      );
+    },
+    0,
+  );
+  assert.equal(
+    exportedSincePlanning,
+    plan.shipments.reduce((total, shipment) => total + shipment.quantity, 0),
+  );
+});
+
+test("regional arrival deposits cargo once and settles against the changed destination price", () => {
+  const {
+    advanceNpcCities,
+    createNpcCities,
+    npcCitySimulationPeriodMs,
+  } = require("../world/domain/npc-cities.ts");
+  const {
+    planRegionalShipments,
+    settleRegionalShipment,
+  } = require("../world/domain/regional-logistics.ts");
+  const { createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const departureTime = npcCitySimulationPeriodMs;
+  const cities = advanceNpcCities(createNpcCities(createStartingWorld()));
+  const plan = planRegionalShipments(cities, [], departureTime, 1);
+  const shipment = [...plan.shipments].sort(
+    (first, second) => second.arrivalTime - first.arrivalTime,
+  )[0];
+  assert.ok(shipment);
+  let citiesInTransit = plan.cities;
+  for (
+    let time = departureTime + npcCitySimulationPeriodMs;
+    time < shipment.arrivalTime;
+    time += npcCitySimulationPeriodMs
+  )
+    citiesInTransit = advanceNpcCities(citiesInTransit);
+  const destinationBefore = citiesInTransit.find(
+    (city) => city.id === shipment.destination.cityId,
+  );
+  assert.notEqual(
+    destinationBefore.localPrices[shipment.commodity],
+    shipment.estimatedDestinationUnitPriceCents,
+  );
+  const inventoryBefore = destinationBefore.inventory[shipment.commodity];
+  const importsBefore = destinationBefore.imports[shipment.commodity];
+  assert.throws(
+    () =>
+      settleRegionalShipment(
+        citiesInTransit,
+        shipment,
+        shipment.arrivalTime - 1,
+      ),
+    /before its arrival time/,
+  );
+  const settlement = settleRegionalShipment(
+    citiesInTransit,
+    shipment,
+    shipment.arrivalTime,
+  );
+  const destinationAfter = settlement.cities.find(
+    (city) => city.id === shipment.destination.cityId,
+  );
+  assert.equal(settlement.shipment.status, "arrived");
+  assert.equal(
+    destinationAfter.inventory[shipment.commodity],
+    inventoryBefore + shipment.quantity,
+  );
+  assert.equal(
+    destinationAfter.imports[shipment.commodity],
+    importsBefore + shipment.quantity,
+  );
+  assert.equal(
+    settlement.shipment.actualDestinationUnitPriceCents,
+    destinationBefore.localPrices[shipment.commodity],
+  );
+  assert.equal(
+    settlement.shipment.actualRevenueCents,
+    settlement.shipment.actualDestinationUnitPriceCents * shipment.quantity,
+  );
+  assert.equal(
+    settlement.shipment.actualProfitCents,
+    settlement.shipment.actualRevenueCents -
+      shipment.purchaseCostCents -
+      shipment.transportCostCents,
+  );
+  assert.notEqual(
+    settlement.shipment.actualProfitCents,
+    shipment.estimatedProfitCents,
+  );
+  assert.throws(
+    () =>
+      settleRegionalShipment(
+        settlement.cities,
+        settlement.shipment,
+        shipment.arrivalTime,
+      ),
+    /Only an in-transit/,
+  );
 });
 
 test("NPC city simulation is step-independent and remains save compatible", () => {
@@ -2493,12 +2660,190 @@ test("NPC city simulation is step-independent and remains save compatible", () =
   )
     stepped.read(time);
   assert.deepEqual(direct.exportSave(), stepped.exportSave());
+  assert.ok(direct.exportSave().regionalShipments.length > 0);
 
   const restored = LocalGameSimulation.fromSave(direct.exportSave());
   assert.deepEqual(restored.exportSave(), direct.exportSave());
   const legacy = { ...direct.exportSave() };
   delete legacy.npcCities;
   delete legacy.npcCitiesUpdatedAt;
+  delete legacy.regionalShipments;
+  delete legacy.nextRegionalShipment;
   const migrated = LocalGameSimulation.fromSave(legacy);
   assert.equal(migrated.read(end).economy.npcCities.length, 5);
+  assert.deepEqual(migrated.exportSave().regionalShipments, []);
+});
+
+test("player regional import conserves cargo, charges cash, arrives by simulation time, and survives save/load", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const start = 10_000;
+  const simulation = new LocalGameSimulation(createStartingWorld(), start);
+  const before = simulation.read(start);
+  const origin = before.economy.regionalLogistics.locations.find(
+    (location) => location.id === "ironhold",
+  );
+  const destination = before.economy.regionalLogistics.locations.find(
+    (location) => location.id === "novagrad",
+  );
+  const initialOriginInventory = origin.inventory.iron_tools;
+  const initialCash = before.economy.market.cashCents;
+  const result = simulation.execute(
+    {
+      type: "create_regional_shipment",
+      expectedRevision: before.revision,
+      originId: origin.id,
+      destinationId: destination.id,
+      commodity: "iron_tools",
+      quantity: 1,
+      expectedOriginPriceCents: origin.localPrices.iron_tools,
+      expectedDestinationPriceCents: destination.localPrices.iron_tools,
+    },
+    start,
+  );
+  assert.equal(result.ok, true);
+  const shipment = result.regionalShipment;
+  assert.equal(shipment.owner, "player");
+  assert.equal(shipment.destinationAction, "store");
+  assert.equal(
+    result.readModel.economy.market.cashCents,
+    initialCash - shipment.purchaseCostCents - shipment.transportCostCents,
+  );
+  assert.equal(
+    result.readModel.economy.regionalLogistics.locations.find(
+      (location) => location.id === origin.id,
+    ).inventory.iron_tools,
+    initialOriginInventory - 1,
+  );
+  const restored = LocalGameSimulation.fromSave(simulation.exportSave());
+  assert.deepEqual(restored.exportSave(), simulation.exportSave());
+  const warehouseBeforeArrival =
+    result.readModel.economy.logistics.warehouseInventory.iron_tools;
+  const arrived = restored.read(shipment.arrivalTime);
+  const settled = arrived.economy.regionalLogistics.shipments.find(
+    (candidate) => candidate.id === shipment.id,
+  );
+  assert.equal(settled.status, "arrived");
+  assert.equal(settled.actualCashChangeCents, 0);
+  assert.equal(
+    arrived.economy.logistics.warehouseInventory.iron_tools,
+    warehouseBeforeArrival + 1,
+  );
+  assert.equal(
+    arrived.economy.market.cashCents,
+    result.readModel.economy.market.cashCents,
+  );
+});
+
+test("player exports settle at the live destination price and poor routes remain valid", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const start = 20_000;
+  const simulation = new LocalGameSimulation(createStartingWorld(), start);
+  const before = simulation.read(start);
+  const origin = before.economy.regionalLogistics.locations.find(
+    (location) => location.id === "novagrad",
+  );
+  const destination = before.economy.regionalLogistics.locations.find(
+    (location) => location.id === "ironhold",
+  );
+  const cashBefore = before.economy.market.cashCents;
+  const foodBefore = origin.inventory.food;
+  const result = simulation.execute(
+    {
+      type: "create_regional_shipment",
+      expectedRevision: before.revision,
+      originId: origin.id,
+      destinationId: destination.id,
+      commodity: "food",
+      quantity: 1,
+      expectedOriginPriceCents: origin.localPrices.food,
+      expectedDestinationPriceCents: destination.localPrices.food,
+    },
+    start,
+  );
+  assert.equal(result.ok, true);
+  const shipment = result.regionalShipment;
+  assert.ok(shipment.estimatedProfitCents < 0);
+  assert.equal(shipment.upfrontCostCents, shipment.transportCostCents);
+  assert.equal(
+    result.readModel.economy.logistics.warehouseInventory.food,
+    foodBefore - 1,
+  );
+  assert.equal(
+    result.readModel.economy.market.cashCents,
+    cashBefore - shipment.transportCostCents,
+  );
+  const arrived = simulation.read(shipment.arrivalTime);
+  const settled = arrived.economy.regionalLogistics.shipments.find(
+    (candidate) => candidate.id === shipment.id,
+  );
+  assert.equal(settled.status, "arrived");
+  assert.equal(
+    settled.actualRevenueCents,
+    settled.actualDestinationUnitPriceCents * shipment.quantity,
+  );
+  assert.equal(settled.actualCashChangeCents, settled.actualRevenueCents);
+  assert.equal(
+    arrived.economy.market.cashCents,
+    cashBefore - shipment.transportCostCents + settled.actualRevenueCents,
+  );
+  assert.equal(
+    settled.actualProfitCents,
+    settled.actualRevenueCents -
+      shipment.purchaseCostCents -
+      shipment.transportCostCents,
+  );
+});
+
+test("regional player commands reject impossible routes and stale prices without mutation", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const start = 30_000;
+  const simulation = new LocalGameSimulation(createStartingWorld(), start);
+  const before = simulation.read(start);
+  const novagrad = before.economy.regionalLogistics.locations.find(
+    (location) => location.id === "novagrad",
+  );
+  const saved = simulation.exportSave();
+  const sameRegion = simulation.execute(
+    {
+      type: "create_regional_shipment",
+      expectedRevision: before.revision,
+      originId: "novagrad",
+      destinationId: "novagrad",
+      commodity: "food",
+      quantity: 1,
+      expectedOriginPriceCents: novagrad.localPrices.food,
+      expectedDestinationPriceCents: novagrad.localPrices.food,
+    },
+    start,
+  );
+  assert.equal(sameRegion.ok, false);
+  assert.equal(sameRegion.status, 422);
+  const destination = before.economy.regionalLogistics.locations.find(
+    (location) => location.id === "greenvale",
+  );
+  const stale = simulation.execute(
+    {
+      type: "create_regional_shipment",
+      expectedRevision: before.revision,
+      originId: "novagrad",
+      destinationId: destination.id,
+      commodity: "food",
+      quantity: 1,
+      expectedOriginPriceCents: novagrad.localPrices.food + 1,
+      expectedDestinationPriceCents: destination.localPrices.food,
+    },
+    start,
+  );
+  assert.equal(stale.ok, false);
+  assert.equal(stale.status, 409);
+  assert.deepEqual(simulation.exportSave(), saved);
 });

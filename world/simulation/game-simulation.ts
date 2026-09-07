@@ -49,6 +49,7 @@ import {
 } from "../domain/production";
 import {
   commodityIds,
+  commodityDefinitions,
   commodityRecord,
   normalizeCommodityInventory,
 } from "../domain/commodities";
@@ -70,6 +71,19 @@ import {
   npcCitySimulationPeriodMs,
   type NpcCityState,
 } from "../domain/npc-cities";
+import {
+  cloneRegionalShipment,
+  createRegionalShipment,
+  isRegionalShipment,
+  npcRegionalTradeLocation,
+  planRegionalShipments,
+  regionalLogisticsPolicy,
+  retainRegionalShipmentHistory,
+  settleRegionalShipment,
+  settleRegionalShipmentValue,
+  type RegionalShipment,
+  type RegionalTradeLocation,
+} from "../domain/regional-logistics";
 import {
   buildingDefinitions,
   withStartingSettlement,
@@ -110,6 +124,16 @@ export type GameCommand =
       quantity: number;
       expectedPriceCents: number;
     }>
+  | Readonly<{
+      type: "create_regional_shipment";
+      expectedRevision: number;
+      originId: string;
+      destinationId: string;
+      commodity: Commodity;
+      quantity: number;
+      expectedOriginPriceCents: number;
+      expectedDestinationPriceCents: number;
+    }>
   | Readonly<{ type: "demolish"; buildingId: string }>;
 
 export type GameReadModel = Readonly<{
@@ -136,6 +160,7 @@ export type CommandResult =
       shipment?: Shipment;
       revenueCents?: number;
       sale?: MarketSaleReceipt;
+      regionalShipment?: RegionalShipment;
       constructionCost?: ConstructionCost;
       demolishedBuildingId?: string;
     }>
@@ -167,6 +192,8 @@ export type LocalSimulationSaveV1 = Readonly<{
   recentMarketActivity?: Readonly<Record<Commodity, MarketActivity>>;
   npcCities?: readonly NpcCityState[];
   npcCitiesUpdatedAt?: number;
+  regionalShipments?: readonly RegionalShipment[];
+  nextRegionalShipment?: number;
 }>;
 
 type MutableSimulationState = {
@@ -189,6 +216,8 @@ type MutableSimulationState = {
   recentMarketActivity: Record<Commodity, MarketActivity>;
   npcCities: NpcCityState[];
   npcCitiesUpdatedAt: number;
+  regionalShipments: RegionalShipment[];
+  nextRegionalShipment: number;
 };
 
 export function createStartingWorld() {
@@ -278,7 +307,18 @@ function isLocalSimulationSaveV1(
           (value.simulationTime as number) ||
         (value.simulationTime as number) -
             (value.npcCitiesUpdatedAt as number) >=
-          npcCitySimulationPeriodMs))
+          npcCitySimulationPeriodMs)) ||
+    (value.regionalShipments !== undefined &&
+      (!Array.isArray(value.regionalShipments) ||
+        !value.regionalShipments.every(isRegionalShipment) ||
+        new Set(
+          value.regionalShipments.map((shipment) =>
+            isRecord(shipment) ? shipment.id : undefined,
+          ),
+        ).size !== value.regionalShipments.length)) ||
+    (value.nextRegionalShipment !== undefined &&
+      (!Number.isSafeInteger(value.nextRegionalShipment) ||
+        (value.nextRegionalShipment as number) < 1))
   )
     return false;
   for (const commodity of ["food", "wood", "stone"] as Commodity[]) {
@@ -398,6 +438,10 @@ export class LocalGameSimulation {
         ),
         npcCitiesUpdatedAt:
           restored.npcCitiesUpdatedAt ?? restored.simulationTime,
+        regionalShipments: (restored.regionalShipments ?? []).map(
+          cloneRegionalShipment,
+        ),
+        nextRegionalShipment: restored.nextRegionalShipment ?? 1,
       };
       for (const building of this.producers) {
         const existing = this.state.productionStates.get(building.id);
@@ -557,6 +601,8 @@ export class LocalGameSimulation {
       ),
       npcCities: createNpcCities(world),
       npcCitiesUpdatedAt: startTime,
+      regionalShipments: [],
+      nextRegionalShipment: 1,
     };
   }
 
@@ -608,6 +654,8 @@ export class LocalGameSimulation {
           command.quantity,
           command.expectedPriceCents,
         );
+      case "create_regional_shipment":
+        return this.createPlayerRegionalShipment(command);
       case "demolish":
         return this.demolish(command.buildingId);
     }
@@ -652,6 +700,10 @@ export class LocalGameSimulation {
       ) as Record<Commodity, MarketActivity>,
       npcCities: this.state.npcCities.map(cloneNpcCity),
       npcCitiesUpdatedAt: this.state.npcCitiesUpdatedAt,
+      regionalShipments: this.state.regionalShipments.map(
+        cloneRegionalShipment,
+      ),
+      nextRegionalShipment: this.state.nextRegionalShipment,
     };
   }
 
@@ -691,11 +743,25 @@ export class LocalGameSimulation {
       );
       const npcCityTime =
         this.state.npcCitiesUpdatedAt + npcCitySimulationPeriodMs;
+      const regionalArrivalTime = this.state.regionalShipments
+        .filter(
+          (shipment) =>
+            shipment.status === "in_transit",
+        )
+        .reduce(
+          (earliest, shipment) =>
+            Math.min(
+              earliest,
+              Math.max(this.state.simulationTime, shipment.arrivalTime),
+            ),
+          Number.POSITIVE_INFINITY,
+        );
       const boundaryTime = Math.min(
         arrivalTime,
         consumptionTime,
         marketTime,
         npcCityTime,
+        regionalArrivalTime,
       );
       if (boundaryTime > simulationTime) break;
       this.advanceProducersTo(boundaryTime);
@@ -745,6 +811,77 @@ export class LocalGameSimulation {
       if (npcCityTime === boundaryTime) {
         this.state.npcCities = advanceNpcCities(this.state.npcCities);
         this.state.npcCitiesUpdatedAt = boundaryTime;
+        const plan = planRegionalShipments(
+          this.state.npcCities,
+          this.state.regionalShipments,
+          boundaryTime,
+          this.state.nextRegionalShipment,
+        );
+        this.state.npcCities = plan.cities;
+        this.state.regionalShipments = retainRegionalShipmentHistory([
+          ...this.state.regionalShipments,
+          ...plan.shipments,
+        ]);
+        this.state.nextRegionalShipment = plan.nextShipmentSequence;
+      }
+      if (regionalArrivalTime === boundaryTime) {
+        for (const shipment of this.state.regionalShipments
+          .filter(
+            (candidate) =>
+              candidate.status === "in_transit" &&
+              candidate.arrivalTime <= boundaryTime,
+          )
+          .sort((first, second) => first.id.localeCompare(second.id))) {
+          let settledShipment: RegionalShipment;
+          if (shipment.destination.cityId === "novagrad") {
+            const destinationPrice = this.marketListings().find(
+              (listing) => listing.commodity === shipment.commodity,
+            )!.priceCents;
+            settledShipment = settleRegionalShipmentValue(
+              shipment,
+              boundaryTime,
+              destinationPrice,
+            );
+            this.state.warehouseInventory[shipment.commodity] +=
+              shipment.quantity;
+            this.addMarketActivity(shipment.commodity, {
+              supply: shipment.quantity,
+            });
+          } else {
+            const settlement = settleRegionalShipment(
+              this.state.npcCities,
+              shipment,
+              boundaryTime,
+            );
+            this.state.npcCities = settlement.cities;
+            settledShipment = settlement.shipment;
+          }
+          if (
+            settledShipment.owner === "player" &&
+            settledShipment.destinationAction === "sell"
+          )
+            this.state.cashCents +=
+              settledShipment.actualCashChangeCents ?? 0;
+          if (settledShipment.owner === "player") {
+            const outcome = settledShipment.actualProfitCents ?? 0;
+            this.addEvent(
+              boundaryTime,
+              "logistics",
+              settledShipment.destinationAction === "store"
+                ? `${settledShipment.quantity} ${commodityDefinitions[settledShipment.commodity].name} imported into Novagrad storage; arrival value ${this.formatMoney(settledShipment.actualRevenueCents ?? 0)}.`
+                : `${settledShipment.quantity} ${commodityDefinitions[settledShipment.commodity].name} sold in ${settledShipment.destination.cityName}; realized ${outcome < 0 ? "loss" : "profit"} ${this.formatMoney(Math.abs(outcome))}.`,
+            );
+          }
+          this.state.regionalShipments = this.state.regionalShipments.map(
+            (candidate) =>
+              candidate.id === shipment.id
+                ? settledShipment
+                : candidate,
+          );
+        }
+        this.state.regionalShipments = retainRegionalShipmentHistory(
+          this.state.regionalShipments,
+        );
       }
       this.state.simulationTime = boundaryTime;
     }
@@ -1171,6 +1308,146 @@ export class LocalGameSimulation {
     };
   }
 
+  private regionalTradeLocations(): RegionalTradeLocation[] {
+    const settlement = this.state.world.settlement;
+    const localPrices = commodityRecord(0);
+    for (const listing of this.marketListings())
+      localPrices[listing.commodity] = listing.priceCents;
+    const novagrad: RegionalTradeLocation = {
+      id: "novagrad",
+      name: settlement?.name ?? "Novagrad",
+      kind: "novagrad",
+      position: settlement?.anchor
+        ? { ...settlement.anchor }
+        : { x: 0, y: 0, z: 0 },
+      tradeCapacity: regionalLogisticsPolicy.maximumShipmentCapacity,
+      inventory: { ...this.state.warehouseInventory },
+      localPrices,
+    };
+    return [
+      novagrad,
+      ...this.state.npcCities.map(npcRegionalTradeLocation),
+    ];
+  }
+
+  private createPlayerRegionalShipment(
+    command: Extract<GameCommand, { type: "create_regional_shipment" }>,
+  ): CommandResult {
+    if (command.expectedRevision !== this.state.revision)
+      return this.failure(
+        409,
+        "Simulation changed. Review the latest trade route.",
+      );
+    if (
+      !commodityIds.includes(command.commodity) ||
+      !Number.isSafeInteger(command.quantity) ||
+      command.quantity <= 0 ||
+      !Number.isSafeInteger(command.expectedOriginPriceCents) ||
+      command.expectedOriginPriceCents <= 0 ||
+      !Number.isSafeInteger(command.expectedDestinationPriceCents) ||
+      command.expectedDestinationPriceCents <= 0
+    )
+      return this.failure(400, "Invalid regional shipment request.");
+    const locations = this.regionalTradeLocations();
+    const origin = locations.find(
+      (location) => location.id === command.originId,
+    );
+    const destination = locations.find(
+      (location) => location.id === command.destinationId,
+    );
+    if (!origin || !destination)
+      return this.failure(404, "Regional trade location was not found.");
+    if (origin.id === destination.id)
+      return this.failure(422, "Choose different origin and destination regions.");
+    if (
+      origin.localPrices[command.commodity] !==
+        command.expectedOriginPriceCents ||
+      destination.localPrices[command.commodity] !==
+        command.expectedDestinationPriceCents
+    )
+      return this.failure(
+        409,
+        "A regional price changed. Review the refreshed route before shipping.",
+      );
+    const capacity = Math.min(
+      regionalLogisticsPolicy.maximumShipmentCapacity,
+      origin.tradeCapacity,
+      destination.tradeCapacity,
+    );
+    if (command.quantity > capacity)
+      return this.failure(
+        422,
+        `This route can carry at most ${capacity} units per shipment.`,
+      );
+    if (command.quantity > origin.inventory[command.commodity])
+      return this.failure(
+        422,
+        `${origin.name} has only ${origin.inventory[command.commodity]} ${commodityDefinitions[command.commodity].name}.`,
+      );
+    const draft = createRegionalShipment({
+      id: `regional-shipment-${this.state.nextRegionalShipment}`,
+      origin,
+      destination,
+      commodity: command.commodity,
+      quantity: command.quantity,
+      departureTime: this.state.simulationTime,
+      owner: "player",
+      destinationAction: destination.kind === "novagrad" ? "store" : "sell",
+    });
+    const upfrontCostCents =
+      draft.transportCostCents +
+      (origin.kind === "npc_city" ? draft.purchaseCostCents : 0);
+    if (upfrontCostCents > this.state.cashCents)
+      return this.failure(
+        422,
+        `This shipment needs ${this.formatMoney(upfrontCostCents)} up front; Novagrad has ${this.formatMoney(this.state.cashCents)}.`,
+      );
+    const shipment = { ...draft, upfrontCostCents };
+    if (origin.kind === "novagrad") {
+      this.state.warehouseInventory[command.commodity] -= command.quantity;
+      this.addMarketActivity(command.commodity, { demand: command.quantity });
+    } else {
+      this.state.npcCities = this.state.npcCities.map((city) =>
+        city.id === origin.id
+          ? {
+              ...city,
+              inventory: {
+                ...city.inventory,
+                [command.commodity]:
+                  city.inventory[command.commodity] - command.quantity,
+              },
+              exports: {
+                ...city.exports,
+                [command.commodity]:
+                  city.exports[command.commodity] + command.quantity,
+              },
+            }
+          : city,
+      );
+    }
+    this.state.cashCents -= upfrontCostCents;
+    this.state.nextRegionalShipment++;
+    this.state.regionalShipments = retainRegionalShipmentHistory([
+      ...this.state.regionalShipments,
+      shipment,
+    ]);
+    this.addEvent(
+      this.state.simulationTime,
+      "logistics",
+      `${command.quantity} ${commodityDefinitions[command.commodity].name} departed ${origin.name} for ${destination.name}; estimated ${shipment.estimatedProfitCents < 0 ? "loss" : "profit"} ${this.formatMoney(Math.abs(shipment.estimatedProfitCents))}.`,
+    );
+    return {
+      ok: true,
+      status: 201,
+      regionalShipment: shipment,
+      readModel: this.readModel(),
+    };
+  }
+
+  private formatMoney(cents: number) {
+    return `$${(cents / 100).toFixed(2)}`;
+  }
+
   private marketListings() {
     return buildMarketListings(
       this.state.warehouseInventory,
@@ -1319,6 +1596,10 @@ export class LocalGameSimulation {
         events: this.state.events.slice(-12).reverse(),
       },
       npcCities: this.state.npcCities.map(cloneNpcCity),
+      regionalLogistics: {
+        shipments: this.state.regionalShipments.map(cloneRegionalShipment),
+        locations: this.regionalTradeLocations(),
+      },
     };
   }
 

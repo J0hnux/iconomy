@@ -69,6 +69,7 @@ import {
   type MarketChartType,
 } from "./price-chart";
 import { FloatingMarket } from "./floating-market";
+import { RegionalTrader } from "./regional-trader";
 
 const button =
   "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-amber-200 disabled:opacity-30";
@@ -149,6 +150,7 @@ export default function WorldMap({
   const [productionBusy, setProductionBusy] = useState(false);
   const [marketOpen, setMarketOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
+  const [regionalTradeOpen, setRegionalTradeOpen] = useState(false);
   const [marketChartType, setMarketChartType] =
     useState<MarketChartType>("line");
   const [marketChartTimeframe, setMarketChartTimeframe] =
@@ -169,6 +171,7 @@ export default function WorldMap({
   >({});
   const [lastMarketSale, setLastMarketSale] =
     useState<MarketSaleReceipt | null>(null);
+  const [regionalTradeMessage, setRegionalTradeMessage] = useState<string | null>(null);
   const [simulationSpeed, setSimulationSpeed] = useState<SimulationSpeed>(1);
   const drag = useRef<{
     id: number;
@@ -544,6 +547,33 @@ export default function WorldMap({
       setProductionBusy(false);
     }
   };
+  const createRegionalShipment = (
+    command: Extract<GameCommand, { type: "create_regional_shipment" }>,
+  ) => {
+    if (productionBusy) return;
+    setProductionBusy(true);
+    setRegionalTradeMessage("Booking cargo and transport…");
+    try {
+      const simulation = simulationRef.current;
+      if (!simulation) throw new Error("Local simulation is starting.");
+      const result = simulation.execute(command, currentSimulationTime());
+      applyReadModel(result.readModel);
+      persistSimulation(simulation);
+      if (!result.ok) throw new Error(result.error);
+      if (!result.regionalShipment)
+        throw new Error("The regional exchange did not return a shipment.");
+      const shipment = result.regionalShipment;
+      setRegionalTradeMessage(
+        `${shipment.quantity} ${commodityDefinitions[shipment.commodity].name} is traveling to ${shipment.destination.cityName}. Estimated ${shipment.estimatedProfitCents < 0 ? "loss" : "profit"}: ${money(Math.abs(shipment.estimatedProfitCents))}.`,
+      );
+    } catch (error) {
+      setRegionalTradeMessage(
+        error instanceof Error ? error.message : "Regional shipment failed.",
+      );
+    } finally {
+      setProductionBusy(false);
+    }
+  };
   const focusBuilding = (buildingId: string) => {
     const building = world.buildings?.find(
       (candidate) => candidate.id === buildingId,
@@ -566,6 +596,7 @@ export default function WorldMap({
       compatibleRecipes.some((recipe) => recipe.producer === site.type),
     );
     setMarketOpen(false);
+    setRegionalTradeOpen(false);
     setMarketMessage(null);
     if (existingSite) {
       focusBuilding(existingSite.buildingId);
@@ -761,7 +792,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestones 0–16
+              Prototype / Milestone 22
             </p>
           </div>
         </div>
@@ -770,10 +801,11 @@ export default function WorldMap({
           aria-label="Primary views"
         >
           <button
-            className={`rounded-lg px-4 py-2 text-sm transition ${!marketOpen && !companyOpen ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-white/10"}`}
+            className={`rounded-lg px-4 py-2 text-sm transition ${!marketOpen && !companyOpen && !regionalTradeOpen ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-white/10"}`}
             onClick={() => {
               setMarketOpen(false);
               setCompanyOpen(false);
+              setRegionalTradeOpen(false);
               sidebarRef.current?.scrollTo({ top: 0 });
             }}
           >
@@ -784,16 +816,29 @@ export default function WorldMap({
             onClick={() => {
               setMarketOpen(true);
               setCompanyOpen(false);
+              setRegionalTradeOpen(false);
               sidebarRef.current?.scrollTo({ top: 0 });
             }}
           >
             Market
           </button>
           <button
+            className={`rounded-lg px-4 py-2 text-sm transition ${regionalTradeOpen ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-white/10"}`}
+            onClick={() => {
+              setRegionalTradeOpen(true);
+              setMarketOpen(false);
+              setCompanyOpen(false);
+              sidebarRef.current?.scrollTo({ top: 0 });
+            }}
+          >
+            Regions
+          </button>
+          <button
             className={`rounded-lg px-4 py-2 text-sm ${companyOpen ? "bg-sky-600" : "text-slate-300 hover:bg-white/10"}`}
             onClick={() => {
               setCompanyOpen(true);
               setMarketOpen(false);
+              setRegionalTradeOpen(false);
               sidebarRef.current?.scrollTo({ top: 0 });
             }}
           >
@@ -832,6 +877,7 @@ export default function WorldMap({
           onCompany={() => {
             setCompanyOpen(true);
             setMarketOpen(false);
+            setRegionalTradeOpen(false);
             sidebarRef.current?.scrollTo({ top: 0 });
           }}
         />
@@ -1074,6 +1120,16 @@ export default function WorldMap({
               setCamera((current) => ({ ...current, focus: focusCell(cell) }));
             }}
           />
+          {regionalTradeOpen && production && (
+            <RegionalTrader
+              snapshot={production}
+              revision={revision}
+              busy={productionBusy}
+              message={regionalTradeMessage}
+              onCreate={createRegionalShipment}
+              onShiftProduction={shiftProduction}
+            />
+          )}
           {marketOpen && production && (
             <section
               className="mb-6 border-b border-white/10 pb-5"
@@ -2315,18 +2371,21 @@ export default function WorldMap({
           setTool("build");
           setMarketOpen(false);
           setCompanyOpen(false);
+          setRegionalTradeOpen(false);
           setHovered(null);
           sidebarRef.current?.scrollTo({ top: 0 });
         }}
         onMarket={() => {
           setMarketOpen(true);
           setCompanyOpen(false);
+          setRegionalTradeOpen(false);
           sidebarRef.current?.scrollTo({ top: 0 });
         }}
         onMarketTerminal={() => setMarketTerminalOpen(true)}
         onCompany={() => {
           setCompanyOpen(true);
           setMarketOpen(false);
+          setRegionalTradeOpen(false);
           sidebarRef.current?.scrollTo({ top: 0 });
         }}
         onWarehouse={() => {
@@ -2334,6 +2393,7 @@ export default function WorldMap({
             focusBuilding(production.logistics.warehouseBuildingId);
           setMarketOpen(false);
           setCompanyOpen(false);
+          setRegionalTradeOpen(false);
           sidebarRef.current?.scrollTo({ top: 0 });
         }}
         onHome={() => {
