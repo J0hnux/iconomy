@@ -79,7 +79,11 @@ import {
 } from "./price-chart";
 import { FloatingMarket } from "./floating-market";
 import { RegionalTrader } from "./regional-trader";
-import { deserializeLocalSave, serializeLocalSave } from "./local-save-storage";
+import {
+  clearLocalSave,
+  loadLocalSave,
+  storeLocalSave,
+} from "./save-repository";
 
 const button =
   "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-amber-200 disabled:opacity-30";
@@ -92,7 +96,6 @@ const rotations: readonly BuildingRotation[] = [
 ];
 const simulationSpeeds = [0, 1, 2, 5] as const;
 type SimulationSpeed = (typeof simulationSpeeds)[number];
-const localSaveKey = "openworld-economy-save-v1";
 const terrainNames: Record<TerrainType, string> = {
   grassland: "Grassland",
   water: "Water",
@@ -247,25 +250,22 @@ export default function WorldMap({
   }, []);
 
   const persistSimulation = useCallback((simulation: LocalGameSimulation) => {
-    try {
-      window.localStorage.setItem(
-        localSaveKey,
-        serializeLocalSave(simulation.exportSave()),
-      );
-      if (saveFailedRef.current) {
-        saveFailedRef.current = false;
-        setSaveMessage(null);
-      }
-    } catch (error) {
-      if (!saveFailedRef.current) {
+    void storeLocalSave(simulation.exportSave())
+      .then(() => {
+        if (saveFailedRef.current) {
+          saveFailedRef.current = false;
+          setSaveMessage(null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (saveFailedRef.current) return;
         saveFailedRef.current = true;
         setSaveMessage(
           error instanceof DOMException && error.name === "QuotaExceededError"
             ? "Autosave storage is full. The game is still running, but newer progress is not saved."
             : "Autosave is unavailable. The game is still running in this tab.",
         );
-      }
-    }
+      });
   }, []);
   const currentSimulationTime = useCallback(() => {
     const now = Date.now();
@@ -376,35 +376,49 @@ export default function WorldMap({
   }, [marketChartExpanded]);
 
   useEffect(() => {
-    let simulation: LocalGameSimulation;
-    let recoveryMessage: string | null = null;
-    const saved = window.localStorage.getItem(localSaveKey);
-    try {
-      simulation = saved
-        ? LocalGameSimulation.fromSave(deserializeLocalSave(saved))
-        : new LocalGameSimulation(initialWorld, Date.now());
-    } catch {
-      window.localStorage.removeItem(localSaveKey);
-      simulation = new LocalGameSimulation(initialWorld, Date.now());
-      recoveryMessage =
-        "The previous local save was invalid, so a new settlement was started.";
-    }
-    simulationRef.current = simulation;
-    simulationTimeRef.current = simulation.exportSave().simulationTime;
-    lastWallTimeRef.current = Date.now();
-    const refresh = () => {
-      applyReadModel(simulation.read(currentSimulationTime()));
-      persistSimulation(simulation);
-    };
-    refresh();
-    const notificationTimer = recoveryMessage
-      ? window.setTimeout(() => setBuildMessage(recoveryMessage), 0)
-      : 0;
-    const timer = window.setInterval(refresh, 1_000);
+    // Loading is asynchronous because IndexedDB is; the simulation only exists
+    // once the stored save has been read, so guard every teardown path.
+    let cancelled = false;
+    let simulation: LocalGameSimulation | null = null;
+    let timer = 0;
+    let notificationTimer = 0;
+    void (async () => {
+      let recoveryMessage: string | null = null;
+      const stored = await loadLocalSave();
+      let loaded: LocalGameSimulation;
+      try {
+        loaded = stored.save
+          ? LocalGameSimulation.fromSave(stored.save)
+          : new LocalGameSimulation(initialWorld, Date.now());
+      } catch {
+        await clearLocalSave();
+        loaded = new LocalGameSimulation(initialWorld, Date.now());
+        recoveryMessage =
+          "The previous local save was invalid, so a new settlement was started.";
+      }
+      if (cancelled) return;
+      simulation = loaded;
+      simulationRef.current = loaded;
+      simulationTimeRef.current = loaded.exportSave().simulationTime;
+      lastWallTimeRef.current = Date.now();
+      const refresh = () => {
+        applyReadModel(loaded.read(currentSimulationTime()));
+        persistSimulation(loaded);
+      };
+      refresh();
+      if (recoveryMessage)
+        notificationTimer = window.setTimeout(
+          () => setBuildMessage(recoveryMessage),
+          0,
+        );
+      timer = window.setInterval(refresh, 1_000);
+    })();
     return () => {
-      window.clearInterval(timer);
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
       if (notificationTimer) window.clearTimeout(notificationTimer);
-      if (simulationRef.current === simulation) simulationRef.current = null;
+      if (simulation && simulationRef.current === simulation)
+        simulationRef.current = null;
     };
   }, [initialWorld, applyReadModel, currentSimulationTime, persistSimulation]);
 

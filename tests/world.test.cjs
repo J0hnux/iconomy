@@ -4063,3 +4063,208 @@ test("a flat price series stays centred and labelled instead of collapsing", () 
   assert.equal(Math.max(2, Math.abs(closeY - openY)), 2);
   assert.equal(openY, middle);
 });
+
+// A minimal in-memory IndexedDB good enough for the repository's usage:
+// open -> upgrade -> transaction -> objectStore -> get/put/delete.
+function createFakeIndexedDb(options = {}) {
+  const stores = new Map();
+  const succeed = (result) => {
+    const request = { result, onsuccess: null, onerror: null };
+    queueMicrotask(() => {
+      if (request.onsuccess) request.onsuccess();
+    });
+    return request;
+  };
+  const fail = (error) => {
+    const request = { error, onsuccess: null, onerror: null };
+    queueMicrotask(() => {
+      if (request.onerror) request.onerror();
+    });
+    return request;
+  };
+  return {
+    stores,
+    open(name, version) {
+      const request = {
+        result: null,
+        onupgradeneeded: null,
+        onsuccess: null,
+        onerror: null,
+        onblocked: null,
+      };
+      queueMicrotask(() => {
+        if (options.refuseOpen) {
+          request.error = new Error("blocked");
+          if (request.onerror) request.onerror();
+          return;
+        }
+        const database = {
+          name,
+          version,
+          objectStoreNames: {
+            contains: (storeName) => stores.has(storeName),
+          },
+          createObjectStore: (storeName) => {
+            stores.set(storeName, new Map());
+            return {};
+          },
+          transaction: (storeName) => ({
+            onabort: null,
+            error: null,
+            objectStore: () => ({
+              get: (key) => succeed(stores.get(storeName)?.get(key)),
+              put: (value, key) => {
+                if (options.refuseWrite) return fail(new Error("write refused"));
+                stores.get(storeName).set(key, value);
+                return succeed(undefined);
+              },
+              delete: (key) => {
+                stores.get(storeName).delete(key);
+                return succeed(undefined);
+              },
+            }),
+          }),
+          close: () => {},
+        };
+        request.result = database;
+        if (!stores.has("saves") && request.onupgradeneeded)
+          request.onupgradeneeded();
+        if (request.onsuccess) request.onsuccess();
+      });
+      return request;
+    },
+  };
+}
+
+function createFakeLocalStorage(options = {}) {
+  const entries = new Map();
+  return {
+    entries,
+    getItem: (key) => (entries.has(key) ? entries.get(key) : null),
+    setItem: (key, value) => {
+      if (options.refuseWrite) {
+        const error = new Error("quota");
+        error.name = "QuotaExceededError";
+        throw error;
+      }
+      entries.set(key, String(value));
+    },
+    removeItem: (key) => entries.delete(key),
+  };
+}
+
+const withBrowser = async (indexedDbValue, localStorageValue, run) => {
+  const priorIndexedDb = globalThis.indexedDB;
+  const priorWindow = globalThis.window;
+  globalThis.indexedDB = indexedDbValue;
+  globalThis.window = { localStorage: localStorageValue };
+  try {
+    return await run();
+  } finally {
+    globalThis.indexedDB = priorIndexedDb;
+    globalThis.window = priorWindow;
+  }
+};
+
+test("saves round-trip through IndexedDB without the localStorage size ceiling", async () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const repository = require("../presentation/world/save-repository.ts");
+
+  const simulation = new LocalGameSimulation(createStartingWorld(), 40_000);
+  simulation.read(400_000);
+  const save = simulation.exportSave();
+
+  const db = createFakeIndexedDb();
+  const storage = createFakeLocalStorage();
+  await withBrowser(db, storage, async () => {
+    assert.deepEqual(await repository.loadLocalSave(), {
+      save: null,
+      backend: "indexeddb",
+      migrated: false,
+    });
+    assert.equal(await repository.storeLocalSave(save), "indexeddb");
+
+    const loaded = await repository.loadLocalSave();
+    assert.equal(loaded.backend, "indexeddb");
+    assert.equal(loaded.migrated, false);
+    // The persisted payload is the unchanged save contract, stored structurally.
+    assert.deepEqual(loaded.save, save);
+    assert.doesNotThrow(() => LocalGameSimulation.fromSave(loaded.save));
+    // Nothing was written to localStorage once IndexedDB accepted the save.
+    assert.equal(storage.entries.size, 0);
+
+    await repository.clearLocalSave();
+    assert.equal((await repository.loadLocalSave()).save, null);
+  });
+});
+
+test("an existing localStorage save migrates into IndexedDB exactly once", async () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const { serializeLocalSave } = require(
+    "../presentation/world/local-save-storage.ts",
+  );
+  const repository = require("../presentation/world/save-repository.ts");
+
+  const simulation = new LocalGameSimulation(createStartingWorld(), 40_000);
+  simulation.read(300_000);
+  const save = simulation.exportSave();
+
+  const db = createFakeIndexedDb();
+  const storage = createFakeLocalStorage();
+  storage.setItem(repository.localSaveKey, serializeLocalSave(save));
+
+  await withBrowser(db, storage, async () => {
+    const migrated = await repository.loadLocalSave();
+    assert.equal(migrated.backend, "indexeddb");
+    assert.equal(migrated.migrated, true);
+    assert.deepEqual(migrated.save, save);
+    // The legacy key is cleared so the migration cannot repeat.
+    assert.equal(storage.getItem(repository.localSaveKey), null);
+
+    const second = await repository.loadLocalSave();
+    assert.equal(second.migrated, false);
+    assert.deepEqual(second.save, save);
+  });
+});
+
+test("storage falls back to localStorage and reports failure when nothing accepts a save", async () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const repository = require("../presentation/world/save-repository.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 40_000);
+  simulation.read(200_000);
+  const save = simulation.exportSave();
+
+  // IndexedDB unavailable: localStorage still takes the save and reads back.
+  const storage = createFakeLocalStorage();
+  await withBrowser(undefined, storage, async () => {
+    assert.equal(await repository.storeLocalSave(save), "localstorage");
+    const loaded = await repository.loadLocalSave();
+    assert.equal(loaded.backend, "localstorage");
+    assert.deepEqual(loaded.save, save);
+  });
+
+  // IndexedDB refuses writes: localStorage is used instead.
+  const refusing = createFakeIndexedDb({ refuseWrite: true });
+  const spare = createFakeLocalStorage();
+  await withBrowser(refusing, spare, async () => {
+    assert.equal(await repository.storeLocalSave(save), "localstorage");
+  });
+
+  // Both refuse: the failure surfaces so the UI can warn instead of diverging.
+  const blocked = createFakeIndexedDb({ refuseOpen: true });
+  const full = createFakeLocalStorage({ refuseWrite: true });
+  await withBrowser(blocked, full, async () => {
+    await assert.rejects(() => repository.storeLocalSave(save));
+    // A blocked store reports "no save" rather than throwing during load.
+    assert.equal((await repository.loadLocalSave()).save, null);
+  });
+});
