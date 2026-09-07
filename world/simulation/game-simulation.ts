@@ -24,6 +24,7 @@ import {
   shortageLevel,
   type EconomyEvent,
   type MarketActivity,
+  type MarketListing,
   type PricePoint,
   type ShortageLevel,
 } from "../domain/market";
@@ -63,6 +64,12 @@ import {
   type FoodConsumptionResult,
 } from "../domain/population";
 import { describeLabor, validateLaborAssignment } from "../domain/labor";
+import {
+  detectMarketIntelligence,
+  novagradMarketObservations,
+  npcCityMarketObservations,
+  type RegionalMarketObservation,
+} from "../domain/market-intelligence";
 import {
   advanceNpcCities,
   cloneNpcCity,
@@ -1609,6 +1616,36 @@ export class LocalGameSimulation {
     }
   }
 
+  private novagradRegionalFlow() {
+    const imports = commodityRecord(0);
+    const exports = commodityRecord(0);
+    for (const shipment of this.state.regionalShipments) {
+      if (shipment.status !== "arrived") continue;
+      if (shipment.destination.cityId === "novagrad")
+        imports[shipment.commodity] += shipment.quantity;
+      if (shipment.origin.cityId === "novagrad")
+        exports[shipment.commodity] += shipment.quantity;
+    }
+    return { imports, exports } as const;
+  }
+
+  private marketIntelligence(listings: readonly MarketListing[]) {
+    const flow = this.novagradRegionalFlow();
+    const observations: RegionalMarketObservation[] = [
+      ...novagradMarketObservations({
+        locationId: "novagrad",
+        locationName: this.state.world.settlement?.name ?? "Novagrad",
+        listings,
+        histories: this.state.priceHistory,
+        latestTime: this.state.simulationTime,
+        imports: flow.imports,
+        exports: flow.exports,
+      }),
+      ...this.state.npcCities.flatMap(npcCityMarketObservations),
+    ];
+    return detectMarketIntelligence(observations, this.state.simulationTime);
+  }
+
   private economySnapshot(): ProductionSnapshot {
     const sites = this.producers.flatMap((building) => {
       const state = this.state.productionStates.get(building.id);
@@ -1654,6 +1691,7 @@ export class LocalGameSimulation {
         opportunities: buildEconomicOpportunities(listings, sites),
         events: this.state.events.slice(-12).reverse(),
       },
+      marketIntelligence: this.marketIntelligence(listings),
       npcCities: this.state.npcCities.map(cloneNpcCity),
       npcCompanies: this.state.npcCompanies.map(cloneNpcCompany),
       regionalLogistics: {

@@ -33,6 +33,10 @@ import {
   type MarketChartTimeframeId,
 } from "@/world/domain/market";
 import {
+  marketIntelligencePolicy,
+  type MarketCondition,
+} from "@/world/domain/market-intelligence";
+import {
   LocalGameSimulation,
   type CommandResult,
   type GameCommand,
@@ -94,6 +98,14 @@ const terrainNames: Record<TerrainType, string> = {
 
 const money = (cents: number) =>
   `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const marketConditionTone: Record<MarketCondition, string> = {
+  severe_shortage: "text-red-300",
+  shortage: "text-amber-200",
+  balanced: "text-slate-400",
+  oversupplied: "text-sky-200",
+  severe_oversupply: "text-emerald-300",
+};
 
 const materialSummary = (
   materials: Readonly<Partial<Record<Commodity, number>>>,
@@ -810,7 +822,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestone 23
+              Prototype / Milestone 24
             </p>
           </div>
         </div>
@@ -1506,6 +1518,86 @@ export default function WorldMap({
                       </span>
                     </button>
                   ))}
+                </div>
+              </div>
+              <div className="mt-5">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-sky-200">
+                  Market intelligence
+                </p>
+                <p className="mt-1 text-[10px] leading-4 text-slate-400">
+                  Read-only regional analysis of the same economy NPC cities and
+                  companies trade in. Possible responses are informational.
+                </p>
+                <div className="mt-2 space-y-2">
+                  {production.marketIntelligence.reports
+                    .slice(0, marketIntelligencePolicy.reportLimit)
+                    .map((report) => (
+                      <article
+                        key={report.id}
+                        className="rounded-xl border border-white/10 bg-black/15 p-3"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="text-xs font-semibold text-slate-100">
+                              {report.locationName} — {report.commodityName}
+                            </h3>
+                            <p
+                              className={`mt-1 text-[9px] uppercase tracking-wide ${marketConditionTone[report.condition]}`}
+                            >
+                              {report.conditionLabel}
+                            </p>
+                          </div>
+                          <p className="font-mono text-[11px] text-slate-200">
+                            {money(report.priceCents)}
+                          </p>
+                        </div>
+                        <dl className="mt-2 grid grid-cols-3 gap-1 text-center text-[10px]">
+                          <div>
+                            <dt className="text-slate-500">Regional median</dt>
+                            <dd className="mt-0.5 font-mono text-slate-200">
+                              {money(report.regionalMedianPriceCents)}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Inventory</dt>
+                            <dd className="mt-0.5 font-mono text-slate-200">
+                              {report.inventory}/{report.targetStock}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Coverage</dt>
+                            <dd className="mt-0.5 font-mono text-slate-200">
+                              {report.inventoryCoveragePeriods === null
+                                ? "—"
+                                : `${report.inventoryCoveragePeriods.toFixed(1)} ${marketIntelligencePolicy.coveragePeriodLabel}s`}
+                            </dd>
+                          </div>
+                        </dl>
+                        <ul className="mt-2 space-y-1 text-[10px] leading-4 text-slate-300">
+                          {report.reasons.map((reason) => (
+                            <li key={reason}>• {reason}</li>
+                          ))}
+                        </ul>
+                        {report.responses.length > 0 && (
+                          <div className="mt-2 border-t border-white/10 pt-2">
+                            <p className="text-[9px] uppercase tracking-wide text-slate-500">
+                              Possible responses
+                            </p>
+                            <ul className="mt-1 space-y-1 text-[10px] leading-4 text-sky-200">
+                              {report.responses.map((response) => (
+                                <li key={response.kind}>
+                                  {response.label}
+                                  <span className="text-slate-400">
+                                    {" "}
+                                    — {response.detail}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </article>
+                    ))}
                 </div>
               </div>
             </section>

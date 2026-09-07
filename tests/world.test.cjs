@@ -3054,3 +3054,536 @@ test("NPC company decisions are deterministic and remain compatible with legacy 
   const migrated = LocalGameSimulation.fromSave(legacy);
   assert.equal(migrated.read(end).economy.npcCompanies.length, 3);
 });
+
+const marketIntelligenceObservation = (overrides) => ({
+  locationId: "ironhold",
+  locationName: "Ironhold",
+  kind: "npc_city",
+  commodity: "food",
+  inventory: 12,
+  targetStock: 12,
+  priceCents: 600,
+  recentProduction: 6,
+  recentSupply: 6,
+  recentConsumption: 6,
+  recentDemand: 6,
+  imports: 0,
+  exports: 0,
+  ...overrides,
+});
+
+test("market intelligence classifies shortage, balance, and oversupply from real conditions", () => {
+  const {
+    classifyMarketCondition,
+    marketIntelligencePolicy,
+  } = require("../world/domain/market-intelligence.ts");
+
+  const balanced = classifyMarketCondition(
+    marketIntelligenceObservation({
+      inventory: 12,
+      recentProduction: 2,
+      recentSupply: 2,
+      recentConsumption: 2,
+      recentDemand: 2,
+    }),
+    600,
+  );
+  assert.equal(balanced.condition, "balanced");
+  assert.equal(balanced.shortageScore, 0);
+  assert.equal(balanced.oversupplyScore, 0);
+  assert.equal(balanced.reasons.length, 1);
+  assert.match(balanced.reasons[0], /no dominant supply or demand pressure/);
+
+  const shortage = classifyMarketCondition(
+    marketIntelligenceObservation({
+      inventory: 8,
+      recentProduction: 4,
+      recentSupply: 4,
+      recentConsumption: 4,
+      recentDemand: 4,
+    }),
+    600,
+  );
+  assert.equal(shortage.condition, "shortage");
+  assert.ok(shortage.shortageScore >= marketIntelligencePolicy.shortageScore);
+  assert.ok(
+    shortage.shortageScore < marketIntelligencePolicy.severeShortageScore,
+  );
+
+  const severeShortage = classifyMarketCondition(
+    marketIntelligenceObservation({
+      inventory: 2,
+      recentProduction: 0,
+      recentSupply: 0,
+      recentConsumption: 8,
+      recentDemand: 8,
+      priceCents: 1_000,
+    }),
+    600,
+  );
+  assert.equal(severeShortage.condition, "severe_shortage");
+  assert.ok(
+    severeShortage.shortageScore >=
+      marketIntelligencePolicy.severeShortageScore,
+  );
+
+  const oversupplied = classifyMarketCondition(
+    marketIntelligenceObservation({
+      inventory: 20,
+      recentProduction: 8,
+      recentSupply: 8,
+      recentConsumption: 6,
+      recentDemand: 6,
+    }),
+    600,
+  );
+  assert.equal(oversupplied.condition, "oversupplied");
+  assert.ok(
+    oversupplied.oversupplyScore >= marketIntelligencePolicy.oversupplyScore,
+  );
+  assert.ok(
+    oversupplied.oversupplyScore <
+      marketIntelligencePolicy.severeOversupplyScore,
+  );
+
+  const severeOversupply = classifyMarketCondition(
+    marketIntelligenceObservation({
+      inventory: 60,
+      recentProduction: 20,
+      recentSupply: 20,
+      recentConsumption: 4,
+      recentDemand: 4,
+      priceCents: 300,
+    }),
+    600,
+  );
+  assert.equal(severeOversupply.condition, "severe_oversupply");
+  assert.ok(
+    severeOversupply.oversupplyScore >=
+      marketIntelligencePolicy.severeOversupplyScore,
+  );
+});
+
+test("market intelligence reacts to regional price deviation and inventory coverage", () => {
+  const {
+    classifyMarketCondition,
+    inventoryCoveragePeriods,
+    regionalMedianPriceCents,
+  } = require("../world/domain/market-intelligence.ts");
+
+  const base = marketIntelligenceObservation({
+    inventory: 12,
+    recentProduction: 6,
+    recentSupply: 6,
+    recentConsumption: 6,
+    recentDemand: 6,
+    priceCents: 1_200,
+  });
+  const atMedian = classifyMarketCondition({ ...base, priceCents: 600 }, 600);
+  const aboveMedian = classifyMarketCondition(base, 600);
+  assert.equal(aboveMedian.priceDeviationBasisPoints, 10_000);
+  assert.equal(atMedian.priceDeviationBasisPoints, 0);
+  assert.ok(aboveMedian.shortageScore > atMedian.shortageScore);
+  assert.ok(
+    aboveMedian.reasons.some((reason) =>
+      /far above the regional median \$6\.00/.test(reason),
+    ),
+  );
+
+  const belowMedian = classifyMarketCondition(
+    { ...base, priceCents: 300 },
+    600,
+  );
+  assert.equal(belowMedian.priceDeviationBasisPoints, -5_000);
+  assert.ok(belowMedian.oversupplyScore > 0);
+
+  const thinCoverage = classifyMarketCondition(
+    { ...base, priceCents: 600, recentConsumption: 12, recentDemand: 12 },
+    600,
+  );
+  assert.equal(thinCoverage.coveragePeriods, 1);
+  assert.ok(thinCoverage.shortageScore > atMedian.shortageScore);
+  assert.equal(
+    inventoryCoveragePeriods({ inventory: 21, recentConsumption: 10 }),
+    2.1,
+  );
+  assert.equal(
+    inventoryCoveragePeriods({ inventory: 21, recentConsumption: 0 }),
+    null,
+  );
+
+  assert.equal(
+    regionalMedianPriceCents(
+      [
+        marketIntelligenceObservation({ locationId: "a", priceCents: 500 }),
+        marketIntelligenceObservation({ locationId: "b", priceCents: 900 }),
+        marketIntelligenceObservation({ locationId: "c", priceCents: 700 }),
+      ],
+      "food",
+    ),
+    700,
+  );
+  assert.equal(
+    regionalMedianPriceCents(
+      [
+        marketIntelligenceObservation({ locationId: "a", priceCents: 500 }),
+        marketIntelligenceObservation({ locationId: "b", priceCents: 900 }),
+      ],
+      "food",
+    ),
+    700,
+  );
+});
+
+test("market intelligence explanations match the conditions that actually fired", () => {
+  const {
+    detectMarketIntelligence,
+  } = require("../world/domain/market-intelligence.ts");
+  const observations = [
+    marketIntelligenceObservation({
+      locationId: "ironhold",
+      locationName: "Ironhold",
+      inventory: 2,
+      targetStock: 24,
+      priceCents: 2_200,
+      recentProduction: 0,
+      recentSupply: 0,
+      recentConsumption: 12,
+      recentDemand: 14,
+      imports: 10,
+    }),
+    marketIntelligenceObservation({
+      locationId: "greenvale",
+      locationName: "Greenvale",
+      inventory: 90,
+      targetStock: 24,
+      priceCents: 1_300,
+      recentProduction: 40,
+      recentSupply: 40,
+      recentConsumption: 10,
+      recentDemand: 10,
+    }),
+  ];
+  const snapshot = detectMarketIntelligence(observations, 120_000);
+  assert.equal(snapshot.updatedAt, 120_000);
+  assert.equal(snapshot.regionalMedianPricesCents.food, 1_750);
+
+  const ironhold = snapshot.reports.find(
+    (report) => report.locationId === "ironhold",
+  );
+  assert.equal(ironhold.condition, "severe_shortage");
+  assert.equal(ironhold.conditionLabel, "Severe Shortage");
+  assert.ok(ironhold.inventory < ironhold.targetStock);
+  assert.ok(
+    ironhold.reasons.some((reason) =>
+      /Inventory 2 is critically below the 24 unit target/.test(reason),
+    ),
+  );
+  assert.equal(ironhold.inventoryCoveragePeriods, 0.2);
+  assert.ok(
+    ironhold.reasons.some((reason) =>
+      /Inventory coverage is critically low at 0\.2 days/.test(reason),
+    ),
+  );
+  assert.ok(ironhold.priceDeviationBasisPoints > 0);
+  assert.ok(
+    ironhold.reasons.some((reason) =>
+      /above the regional median \$17\.50/.test(reason),
+    ),
+  );
+  assert.equal(ironhold.productionShortfall, 12);
+  assert.ok(
+    ironhold.reasons.some((reason) =>
+      /Consumption 12 exceeds local production 0/.test(reason),
+    ),
+  );
+  assert.equal(ironhold.unfilledDemand, 14);
+  assert.ok(
+    ironhold.reasons.some((reason) =>
+      /14 units of recent Basic Food demand went unfilled/.test(reason),
+    ),
+  );
+  assert.equal(ironhold.importDependenceBasisPoints, 10_000);
+  assert.ok(
+    ironhold.reasons.some((reason) =>
+      /Imports supplied 100% of available Basic Food/.test(reason),
+    ),
+  );
+
+  const greenvale = snapshot.reports.find(
+    (report) => report.locationId === "greenvale",
+  );
+  assert.equal(greenvale.condition, "severe_oversupply");
+  assert.ok(greenvale.inventory > greenvale.targetStock);
+  assert.ok(
+    greenvale.reasons.every(
+      (reason) => !/critically low|went unfilled/.test(reason),
+    ),
+  );
+
+  assert.equal(snapshot.reports[0].locationId, "ironhold");
+  assert.deepEqual(detectMarketIntelligence(observations, 120_000), snapshot);
+});
+
+test("possible responses stay informational and only name achievable actions", () => {
+  const {
+    detectMarketIntelligence,
+    possibleResponses,
+  } = require("../world/domain/market-intelligence.ts");
+  const short = marketIntelligenceObservation({
+    locationId: "ironhold",
+    locationName: "Ironhold",
+    inventory: 1,
+    targetStock: 24,
+    recentProduction: 0,
+    recentSupply: 0,
+    recentConsumption: 12,
+    recentDemand: 12,
+  });
+  const surplus = marketIntelligenceObservation({
+    locationId: "greenvale",
+    locationName: "Greenvale",
+    inventory: 90,
+    targetStock: 24,
+    priceCents: 400,
+    recentProduction: 40,
+    recentSupply: 40,
+    recentConsumption: 4,
+    recentDemand: 4,
+  });
+  const shortageResponses = possibleResponses(short, "severe_shortage", [
+    short,
+    surplus,
+  ]);
+  assert.deepEqual(
+    shortageResponses.map((response) => response.kind),
+    ["produce", "import"],
+  );
+  assert.match(shortageResponses[1].detail, /Greenvale holds 90 units/);
+  for (const response of shortageResponses)
+    assert.ok(
+      !/guarantee|buy now|profit/i.test(
+        `${response.label} ${response.detail}`,
+      ),
+    );
+
+  assert.deepEqual(
+    possibleResponses(short, "severe_shortage", [short]).map(
+      (response) => response.kind,
+    ),
+    ["produce"],
+  );
+  assert.deepEqual(
+    possibleResponses(surplus, "severe_oversupply", [short, surplus]).map(
+      (response) => response.kind,
+    ),
+    ["reduce_production", "export"],
+  );
+  assert.deepEqual(
+    possibleResponses(surplus, "balanced", [short, surplus]),
+    [],
+  );
+
+  const producible = detectMarketIntelligence(
+    [
+      marketIntelligenceObservation({
+        commodity: "iron_ore",
+        inventory: 0,
+        targetStock: 20,
+        recentProduction: 0,
+        recentSupply: 0,
+        recentConsumption: 10,
+        recentDemand: 10,
+      }),
+    ],
+    1_000,
+  );
+  assert.equal(producible.reports[0].condition, "severe_shortage");
+  assert.ok(
+    producible.reports[0].responses.some(
+      (response) => response.kind === "produce",
+    ),
+  );
+});
+
+test("changing economic conditions move a market between classifications", () => {
+  const {
+    detectMarketIntelligence,
+  } = require("../world/domain/market-intelligence.ts");
+  const at = (inventory, production, consumption) =>
+    detectMarketIntelligence(
+      [
+        marketIntelligenceObservation({
+          inventory,
+          targetStock: 20,
+          recentProduction: production,
+          recentSupply: production,
+          recentConsumption: consumption,
+          recentDemand: consumption,
+        }),
+      ],
+      1_000,
+    ).reports[0].condition;
+  assert.equal(at(1, 0, 10), "severe_shortage");
+  assert.equal(at(12, 5, 5), "shortage");
+  assert.equal(at(18, 5, 5), "balanced");
+  assert.equal(at(32, 8, 5), "oversupplied");
+  assert.equal(at(90, 30, 5), "severe_oversupply");
+});
+
+test("recent local flow is summed over one coverage period only", () => {
+  const {
+    marketIntelligencePolicy,
+    summarizeRecentFlow,
+  } = require("../world/domain/market-intelligence.ts");
+  const history = [
+    {
+      time: 10_000,
+      priceCents: 600,
+      recentSupply: 5,
+      recentDemand: 5,
+      recentConsumption: 5,
+    },
+    {
+      time: 70_000,
+      priceCents: 600,
+      recentSupply: 2,
+      recentDemand: 3,
+      recentConsumption: 1,
+    },
+    {
+      time: 100_000,
+      priceCents: 600,
+      recentSupply: 4,
+      recentDemand: 6,
+      recentConsumption: 6,
+    },
+  ];
+  assert.deepEqual(summarizeRecentFlow(history, 120_000), {
+    supply: 6,
+    demand: 9,
+    consumption: 7,
+  });
+  assert.deepEqual(summarizeRecentFlow(history, 60_000), {
+    supply: 5,
+    demand: 5,
+    consumption: 5,
+  });
+  assert.deepEqual(summarizeRecentFlow([], 60_000), {
+    supply: 0,
+    demand: 0,
+    consumption: 0,
+  });
+  assert.equal(marketIntelligencePolicy.coveragePeriodMs, 60_000);
+  assert.throws(() => summarizeRecentFlow(history, 1_000, 0), RangeError);
+});
+
+test("market intelligence observes the live economy without mutating it", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const {
+    marketConditionLabels,
+  } = require("../world/domain/market-intelligence.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const before = JSON.parse(JSON.stringify(simulation.exportSave()));
+  const intelligence = simulation.read(200_000).economy.marketIntelligence;
+  const afterFirstRead = JSON.parse(JSON.stringify(simulation.exportSave()));
+
+  const repeated = simulation.read(200_000).economy.marketIntelligence;
+  assert.deepEqual(repeated, intelligence);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(simulation.exportSave())),
+    afterFirstRead,
+  );
+  assert.notDeepEqual(afterFirstRead, before);
+
+  const economy = simulation.read(200_000).economy;
+  assert.equal(
+    intelligence.reports.length,
+    (economy.npcCities.length + 1) * economy.market.listings.length,
+  );
+  assert.equal(
+    new Set(intelligence.reports.map((report) => report.id)).size,
+    intelligence.reports.length,
+  );
+  assert.ok(
+    intelligence.reports.some((report) => report.locationId === "novagrad"),
+  );
+  for (const city of economy.npcCities)
+    assert.ok(
+      intelligence.reports.some((report) => report.locationId === city.id),
+    );
+
+  const greenvale = economy.npcCities.find((city) => city.id === "greenvale");
+  const greenvaleCrops = intelligence.reports.find(
+    (report) =>
+      report.locationId === "greenvale" && report.commodity === "crops",
+  );
+  assert.equal(greenvaleCrops.inventory, greenvale.inventory.crops);
+  assert.equal(greenvaleCrops.priceCents, greenvale.localPrices.crops);
+  assert.equal(
+    greenvaleCrops.recentProduction,
+    greenvale.recentProduction.crops,
+  );
+  assert.equal(
+    greenvaleCrops.recentConsumption,
+    greenvale.recentConsumption.crops,
+  );
+
+  const novagradFood = intelligence.reports.find(
+    (report) => report.locationId === "novagrad" && report.commodity === "food",
+  );
+  const foodListing = economy.market.listings.find(
+    (listing) => listing.commodity === "food",
+  );
+  assert.equal(novagradFood.inventory, foodListing.available);
+  assert.equal(novagradFood.priceCents, foodListing.priceCents);
+  assert.equal(novagradFood.targetStock, foodListing.desiredStock);
+  assert.equal(
+    novagradFood.conditionLabel,
+    marketConditionLabels[novagradFood.condition],
+  );
+
+  assert.ok(Array.isArray(economy.market.opportunities));
+  assert.equal(intelligence.updatedAt, economy.simulationTime);
+});
+
+test("market intelligence is deterministic across identical simulations and saves", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const first = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const second = new LocalGameSimulation(createStartingWorld(), 1_000);
+  assert.deepEqual(
+    second.read(180_000).economy.marketIntelligence,
+    first.read(180_000).economy.marketIntelligence,
+  );
+
+  const stepped = new LocalGameSimulation(createStartingWorld(), 1_000);
+  for (let time = 20_000; time <= 180_000; time += 20_000) stepped.read(time);
+  assert.deepEqual(
+    stepped.read(180_000).economy.marketIntelligence,
+    first.read(180_000).economy.marketIntelligence,
+  );
+
+  const save = first.exportSave();
+  assert.equal("marketIntelligence" in save, false);
+  const restored = LocalGameSimulation.fromSave(
+    JSON.parse(JSON.stringify(save)),
+  );
+  assert.deepEqual(
+    restored.read(180_000).economy.marketIntelligence,
+    first.read(180_000).economy.marketIntelligence,
+  );
+
+  const legacy = JSON.parse(JSON.stringify(save));
+  delete legacy.npcCompanies;
+  delete legacy.npcCompaniesUpdatedAt;
+  assert.ok(
+    LocalGameSimulation.fromSave(legacy).read(180_000).economy
+      .marketIntelligence.reports.length > 0,
+  );
+});

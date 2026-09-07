@@ -6,6 +6,7 @@ import {
 } from "./settlement";
 import type { LogisticsSnapshot } from "./logistics";
 import type { MarketSnapshot } from "./market";
+import type { MarketIntelligenceSnapshot } from "./market-intelligence";
 import type { PopulationSnapshot } from "./population";
 import type { NpcCityState } from "./npc-cities";
 import type { NpcCompanyState } from "./npc-companies";
@@ -308,6 +309,7 @@ export type ProductionSnapshot = Readonly<{
   sites: readonly ProductionSite[];
   logistics: LogisticsSnapshot;
   market: MarketSnapshot;
+  marketIntelligence: MarketIntelligenceSnapshot;
   npcCities: readonly NpcCityState[];
   npcCompanies: readonly NpcCompanyState[];
   regionalLogistics: RegionalLogisticsSnapshot;
