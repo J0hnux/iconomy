@@ -277,6 +277,17 @@ Milestone 18 is the second simulation milestone after the Milestone 16.7 gamepla
 
 For gameplay verification, overproduce and dispatch Crops, then sell exact quantities while watching recent supply, demand, inventory, price trend, and price reasons. Compare selling the full stock with retaining Crops for food processing. Use Shift production to pause or restaff a Farm, change a compatible Workshop recipe, or enter Farm construction. Reduce food production and accelerate time to create a shortage, then resume or expand production and watch inventory and price pressure recover.
 
+## Milestone 20: NPC cities
+
+- Five deterministic aggregate cities now surround Novagrad: agricultural Greenvale, forestry-focused Northwood, stoneworking Stonebridge, mining and metals center Ironhold, and coastal processing hub Port Azure. Their logical `x/y/z` positions follow the generated farm belt, Northwood Forest, Stone Ridge, Iron Heights, and coast without adding renderer objects.
+- Every city tracks population, resource advantages, recipe capacity, inventories, recent production and consumption, imports, exports, and a complete local price map using the existing commodity catalog. No duplicate regional goods or per-citizen simulation were added.
+- NPC production resolves configured capacity through the existing recipes, so processing consumes genuine inputs. Aggregate households consume food with the existing food-value policy. Limited deterministic intercity transfers move only real surplus inventory to deficits, with every imported unit matched by an export.
+- Regional prices use existing commodity base prices and the shared scarcity-policy weights, scaled to each city's population, inventory, production, consumption, imports, and exports. Agriculture, timber, stone, metal, and coastal specializations therefore create different inventories and prices over time.
+- NPC cities advance every 60 simulation seconds at exact authority-owned boundaries. Version 1 saves preserve their state and timing through optional fields, while legacy saves initialize the same deterministic cities from their saved world.
+- This milestone adds simulation state only. Player regional shipping, import/export commands, route controls, detailed NPC companies, and regional trading UI remain outside Milestone 20.
+
+For verification, advance at least one NPC-city period and compare Crops in Greenvale with Ironhold, then compare Iron Ore in Ironhold with Greenvale. Inspect the saved `npcCities` snapshots to confirm production, consumption, inventories, matched imports and exports, and distinct prices. Advancing three periods in one read or three separate reads produces the same save.
+
 ## Run and verify
 
 ```bash

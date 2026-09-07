@@ -2387,3 +2387,118 @@ test("market prices and flow history are independent of read frequency", () => {
     frequent.read(time);
   assert.deepEqual(frequent.exportSave(), direct.exportSave());
 });
+
+test("NPC city specializations use existing recipes and create distinct regional economies", () => {
+  const {
+    advanceNpcCities,
+    createNpcCities,
+    npcCityProductionCapacity,
+  } = require("../world/domain/npc-cities.ts");
+  const { commodityIds } = require("../world/domain/commodities.ts");
+  const { productionRecipes } = require("../world/domain/production.ts");
+  const { createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const cities = createNpcCities(createStartingWorld());
+  assert.equal(cities.length, 5);
+  assert.equal(new Set(cities.map((city) => city.id)).size, cities.length);
+  for (const city of cities) {
+    assert.ok(city.population > 0);
+    assert.ok(city.resourceAdvantages.length > 0);
+    assert.ok(Number.isInteger(city.position.x));
+    assert.ok(Number.isInteger(city.position.y));
+    assert.ok(Number.isInteger(city.position.z));
+    assert.deepEqual(Object.keys(city.inventory), commodityIds);
+    for (const recipeId of Object.keys(city.recipeCapacity))
+      assert.ok(productionRecipes[recipeId]);
+  }
+  const greenvale = cities.find((city) => city.id === "greenvale");
+  const ironhold = cities.find((city) => city.id === "ironhold");
+  assert.ok(npcCityProductionCapacity(greenvale).crops > 0);
+  assert.ok(npcCityProductionCapacity(ironhold).iron_ore > 0);
+
+  let advanced = cities;
+  for (let period = 0; period < 3; period++)
+    advanced = advanceNpcCities(advanced);
+  const advancedGreenvale = advanced.find((city) => city.id === "greenvale");
+  const advancedIronhold = advanced.find((city) => city.id === "ironhold");
+  assert.ok(advancedGreenvale.inventory.crops > advancedIronhold.inventory.crops);
+  assert.ok(
+    advancedGreenvale.localPrices.crops < advancedIronhold.localPrices.crops,
+  );
+  assert.ok(
+    advancedIronhold.inventory.iron_ore > advancedGreenvale.inventory.iron_ore,
+  );
+  assert.ok(
+    advancedIronhold.localPrices.iron_ore <
+      advancedGreenvale.localPrices.iron_ore,
+  );
+});
+
+test("NPC intercity trade conserves goods while recording matched imports and exports", () => {
+  const {
+    advanceNpcCities,
+    createNpcCities,
+  } = require("../world/domain/npc-cities.ts");
+  const { commodityIds } = require("../world/domain/commodities.ts");
+  const { createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const initial = createNpcCities(createStartingWorld());
+  const advanced = advanceNpcCities(initial);
+  let traded = 0;
+  for (const commodity of commodityIds) {
+    const before = initial.reduce(
+      (total, city) => total + city.inventory[commodity],
+      0,
+    );
+    const produced = advanced.reduce(
+      (total, city) => total + city.recentProduction[commodity],
+      0,
+    );
+    const consumed = advanced.reduce(
+      (total, city) => total + city.recentConsumption[commodity],
+      0,
+    );
+    const after = advanced.reduce(
+      (total, city) => total + city.inventory[commodity],
+      0,
+    );
+    const imported = advanced.reduce(
+      (total, city) => total + city.imports[commodity],
+      0,
+    );
+    const exported = advanced.reduce(
+      (total, city) => total + city.exports[commodity],
+      0,
+    );
+    assert.equal(after, before + produced - consumed);
+    assert.equal(imported, exported);
+    traded += imported;
+  }
+  assert.ok(traded > 0);
+});
+
+test("NPC city simulation is step-independent and remains save compatible", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const { npcCitySimulationPeriodMs } = require("../world/domain/npc-cities.ts");
+  const start = 1_000;
+  const end = start + npcCitySimulationPeriodMs * 3;
+  const direct = new LocalGameSimulation(createStartingWorld(), start);
+  const stepped = new LocalGameSimulation(createStartingWorld(), start);
+  direct.read(end);
+  for (
+    let time = start + npcCitySimulationPeriodMs;
+    time <= end;
+    time += npcCitySimulationPeriodMs
+  )
+    stepped.read(time);
+  assert.deepEqual(direct.exportSave(), stepped.exportSave());
+
+  const restored = LocalGameSimulation.fromSave(direct.exportSave());
+  assert.deepEqual(restored.exportSave(), direct.exportSave());
+  const legacy = { ...direct.exportSave() };
+  delete legacy.npcCities;
+  delete legacy.npcCitiesUpdatedAt;
+  const migrated = LocalGameSimulation.fromSave(legacy);
+  assert.equal(migrated.read(end).economy.npcCities.length, 5);
+});

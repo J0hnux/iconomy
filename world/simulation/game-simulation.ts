@@ -63,6 +63,14 @@ import {
 } from "../domain/population";
 import { describeLabor, validateLaborAssignment } from "../domain/labor";
 import {
+  advanceNpcCities,
+  cloneNpcCity,
+  createNpcCities,
+  isNpcCityState,
+  npcCitySimulationPeriodMs,
+  type NpcCityState,
+} from "../domain/npc-cities";
+import {
   buildingDefinitions,
   withStartingSettlement,
   type Building,
@@ -157,6 +165,8 @@ export type LocalSimulationSaveV1 = Readonly<{
   foodConsumptionUpdatedAt?: number;
   lastFoodConsumption?: FoodConsumptionResult | null;
   recentMarketActivity?: Readonly<Record<Commodity, MarketActivity>>;
+  npcCities?: readonly NpcCityState[];
+  npcCitiesUpdatedAt?: number;
 }>;
 
 type MutableSimulationState = {
@@ -177,6 +187,8 @@ type MutableSimulationState = {
   foodConsumptionUpdatedAt: number;
   lastFoodConsumption: FoodConsumptionResult | null;
   recentMarketActivity: Record<Commodity, MarketActivity>;
+  npcCities: NpcCityState[];
+  npcCitiesUpdatedAt: number;
 };
 
 export function createStartingWorld() {
@@ -242,7 +254,31 @@ function isLocalSimulationSaveV1(
           populationPolicy.foodConsumptionPeriodMs)) ||
     (value.lastFoodConsumption !== undefined &&
       value.lastFoodConsumption !== null &&
-      !isFoodConsumptionResult(value.lastFoodConsumption))
+      !isFoodConsumptionResult(value.lastFoodConsumption)) ||
+    (value.npcCities !== undefined &&
+      (!Array.isArray(value.npcCities) ||
+        value.npcCities.length < 3 ||
+        value.npcCities.length > 5 ||
+        !value.npcCities.every(isNpcCityState) ||
+        new Set(
+          value.npcCities.map((city) =>
+            isRecord(city) ? city.id : undefined,
+          ),
+        ).size !== value.npcCities.length ||
+        value.npcCities.some((city) => {
+          if (!isNpcCityState(city)) return true;
+          return (
+            city.position.x >= (world.size as number) ||
+            city.position.y >= (world.size as number)
+          );
+        }))) ||
+    (value.npcCitiesUpdatedAt !== undefined &&
+      (!Number.isSafeInteger(value.npcCitiesUpdatedAt) ||
+        (value.npcCitiesUpdatedAt as number) >
+          (value.simulationTime as number) ||
+        (value.simulationTime as number) -
+            (value.npcCitiesUpdatedAt as number) >=
+          npcCitySimulationPeriodMs))
   )
     return false;
   for (const commodity of ["food", "wood", "stone"] as Commodity[]) {
@@ -357,6 +393,11 @@ export class LocalGameSimulation {
             }
           : null,
         recentMarketActivity,
+        npcCities: (restored.npcCities ?? createNpcCities(restored.world)).map(
+          cloneNpcCity,
+        ),
+        npcCitiesUpdatedAt:
+          restored.npcCitiesUpdatedAt ?? restored.simulationTime,
       };
       for (const building of this.producers) {
         const existing = this.state.productionStates.get(building.id);
@@ -514,6 +555,8 @@ export class LocalGameSimulation {
       recentMarketActivity: commodityRecord<MarketActivity>(
         emptyMarketActivity(),
       ),
+      npcCities: createNpcCities(world),
+      npcCitiesUpdatedAt: startTime,
     };
   }
 
@@ -607,6 +650,8 @@ export class LocalGameSimulation {
           { ...this.state.recentMarketActivity[commodity] },
         ]),
       ) as Record<Commodity, MarketActivity>,
+      npcCities: this.state.npcCities.map(cloneNpcCity),
+      npcCitiesUpdatedAt: this.state.npcCitiesUpdatedAt,
     };
   }
 
@@ -644,10 +689,13 @@ export class LocalGameSimulation {
         this.state.simulationTime,
         this.state.marketUpdatedAt + 5_000,
       );
+      const npcCityTime =
+        this.state.npcCitiesUpdatedAt + npcCitySimulationPeriodMs;
       const boundaryTime = Math.min(
         arrivalTime,
         consumptionTime,
         marketTime,
+        npcCityTime,
       );
       if (boundaryTime > simulationTime) break;
       this.advanceProducersTo(boundaryTime);
@@ -693,6 +741,10 @@ export class LocalGameSimulation {
             demand: source.unitsConsumed,
             consumption: source.unitsConsumed,
           });
+      }
+      if (npcCityTime === boundaryTime) {
+        this.state.npcCities = advanceNpcCities(this.state.npcCities);
+        this.state.npcCitiesUpdatedAt = boundaryTime;
       }
       this.state.simulationTime = boundaryTime;
     }
@@ -1266,6 +1318,7 @@ export class LocalGameSimulation {
         opportunities: buildEconomicOpportunities(listings, sites),
         events: this.state.events.slice(-12).reverse(),
       },
+      npcCities: this.state.npcCities.map(cloneNpcCity),
     };
   }
 

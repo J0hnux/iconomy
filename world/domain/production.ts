@@ -7,6 +7,7 @@ import {
 import type { LogisticsSnapshot } from "./logistics";
 import type { MarketSnapshot } from "./market";
 import type { PopulationSnapshot } from "./population";
+import type { NpcCityState } from "./npc-cities";
 import type { SurfaceCell, WorldPosition, WorldSnapshot } from "./world";
 import {
   commodityDefinitions,
@@ -305,6 +306,7 @@ export type ProductionSnapshot = Readonly<{
   sites: readonly ProductionSite[];
   logistics: LogisticsSnapshot;
   market: MarketSnapshot;
+  npcCities: readonly NpcCityState[];
 }>;
 
 export type ProductionResolution = Readonly<{
