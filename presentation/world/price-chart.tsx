@@ -12,7 +12,7 @@ import {
 
 export type MarketChartType = "line" | "candlestick";
 
-type ChartDimensions = Readonly<{
+export type ChartDimensions = Readonly<{
   width: number;
   height: number;
   top: number;
@@ -56,9 +56,30 @@ const timeLabel = (time: number) =>
 const intervalLabel = (startTime: number, endTime: number) =>
   `${timeLabel(startTime)}–${timeLabel(endTime)}`;
 
-function priceScale(prices: readonly number[], dimensions: ChartDimensions) {
-  const minimum = Math.min(...prices);
-  const maximum = Math.max(...prices);
+/** Domain padding applied when every observed price is identical. */
+export const flatPriceScalePaddingBasisPoints = 200;
+
+/**
+ * A market that has reached a fixed point reports one repeated price. Without
+ * padding the domain collapses, every point maps to the top of the plot, and
+ * both axis labels read the same value. Padding a flat series keeps the line
+ * and its candles centred and legible.
+ */
+export function priceScale(
+  prices: readonly number[],
+  dimensions: ChartDimensions,
+) {
+  const lowest = Math.min(...prices);
+  const highest = Math.max(...prices);
+  const padding =
+    highest === lowest
+      ? Math.max(
+          1,
+          Math.round((highest * flatPriceScalePaddingBasisPoints) / 10_000),
+        )
+      : 0;
+  const minimum = lowest - padding;
+  const maximum = highest + padding;
   const range = Math.max(1, maximum - minimum);
   const plotHeight = dimensions.height - dimensions.top - dimensions.bottom;
   return {

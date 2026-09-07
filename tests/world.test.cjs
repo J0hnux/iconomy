@@ -4,15 +4,31 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const ts = require("typescript");
 // Test-process-only TS loading; type safety is checked separately by tsc/build.
-require.extensions[".ts"] = (module, filename) => {
+const compileTypeScript = (jsx) => (module, filename) => {
   module._compile(
     ts.transpileModule(fs.readFileSync(filename, "utf8"), {
       compilerOptions: {
         module: ts.ModuleKind.CommonJS,
         target: ts.ScriptTarget.ES2017,
+        ...(jsx ? { jsx: ts.JsxEmit.ReactJSX } : {}),
       },
     }).outputText,
     filename,
+  );
+};
+require.extensions[".ts"] = compileTypeScript(false);
+require.extensions[".tsx"] = compileTypeScript(true);
+// Presentation modules use the "@/" path alias that tsconfig maps to the repo root.
+const nodePath = require("node:path");
+const NodeModule = require("node:module");
+const resolveFilename = NodeModule._resolveFilename;
+NodeModule._resolveFilename = function (request, ...rest) {
+  return resolveFilename.call(
+    this,
+    request.startsWith("@/")
+      ? nodePath.join(__dirname, "..", request.slice(2))
+      : request,
+    ...rest,
   );
 };
 const {
@@ -3995,4 +4011,55 @@ test("industry positions expose competition without promising a profit", () => {
   );
   assert.ok(Number.isSafeInteger(ironOre.npcSupplyGrowthUnits));
   assert.ok(ironOre.npcSupply > 0);
+});
+
+test("a flat price series stays centred and labelled instead of collapsing", () => {
+  const {
+    priceScale,
+    flatPriceScalePaddingBasisPoints,
+  } = require("../presentation/world/price-chart.tsx");
+  const dimensions = {
+    width: 620,
+    height: 250,
+    top: 14,
+    bottom: 30,
+    left: 16,
+    right: 16,
+  };
+  const plotHeight = dimensions.height - dimensions.top - dimensions.bottom;
+  const middle = dimensions.top + plotHeight / 2;
+
+  // A market at a fixed point reports one repeated price.
+  const flat = priceScale([742, 742, 742, 742], dimensions);
+  const padding = Math.round((742 * flatPriceScalePaddingBasisPoints) / 10_000);
+  assert.ok(padding > 0);
+  assert.equal(flat.minimum, 742 - padding);
+  assert.equal(flat.maximum, 742 + padding);
+  // The series sits mid-plot, not pinned to the top edge.
+  assert.equal(flat.y(742), middle);
+  assert.ok(flat.y(742) > dimensions.top);
+  assert.ok(flat.y(742) < dimensions.height - dimensions.bottom);
+  // The two axis labels now differ, so the chart no longer reads as broken.
+  assert.notEqual(flat.minimum, flat.maximum);
+
+  // A very small price still gets at least one cent of padding.
+  const tiny = priceScale([1, 1], dimensions);
+  assert.equal(tiny.minimum, 0);
+  assert.equal(tiny.maximum, 2);
+  assert.equal(tiny.y(1), middle);
+
+  // A series with real movement is unchanged: exact bounds, full plot height.
+  const moving = priceScale([504, 627, 742], dimensions);
+  assert.equal(moving.minimum, 504);
+  assert.equal(moving.maximum, 742);
+  assert.equal(moving.y(742), dimensions.top);
+  assert.equal(moving.y(504), dimensions.top + plotHeight);
+  assert.ok(moving.y(627) > moving.y(742) && moving.y(627) < moving.y(504));
+
+  // Flat candles resolve to a visible body rather than a zero-height sliver.
+  const flatCandle = priceScale([742, 742], dimensions);
+  const openY = flatCandle.y(742);
+  const closeY = flatCandle.y(742);
+  assert.equal(Math.max(2, Math.abs(closeY - openY)), 2);
+  assert.equal(openY, middle);
 });
