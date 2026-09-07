@@ -16,11 +16,14 @@ import {
 import {
   buildEconomicOpportunities,
   buildMarketListings,
+  emptyMarketActivity,
   marketDefinitions,
+  marketPriceAnalysis,
   marketPriceCents,
   retainMarketPriceHistory,
   shortageLevel,
   type EconomyEvent,
+  type MarketActivity,
   type PricePoint,
   type ShortageLevel,
 } from "../domain/market";
@@ -144,6 +147,7 @@ export type LocalSimulationSaveV1 = Readonly<{
   nextEvent: number;
   foodConsumptionUpdatedAt?: number;
   lastFoodConsumption?: FoodConsumptionResult | null;
+  recentMarketActivity?: Readonly<Record<Commodity, MarketActivity>>;
 }>;
 
 type MutableSimulationState = {
@@ -163,6 +167,7 @@ type MutableSimulationState = {
   nextEvent: number;
   foodConsumptionUpdatedAt: number;
   lastFoodConsumption: FoodConsumptionResult | null;
+  recentMarketActivity: Record<Commodity, MarketActivity>;
 };
 
 export function createStartingWorld() {
@@ -179,6 +184,16 @@ function isNonnegativeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
+function isMarketActivity(value: unknown): value is MarketActivity {
+  if (!isRecord(value)) return false;
+  return (
+    isNonnegativeInteger(value.supply) &&
+    isNonnegativeInteger(value.demand) &&
+    isNonnegativeInteger(value.consumption) &&
+    value.consumption <= value.demand
+  );
+}
+
 function isLocalSimulationSaveV1(
   value: unknown,
 ): value is LocalSimulationSaveV1 {
@@ -187,6 +202,7 @@ function isLocalSimulationSaveV1(
   const inventory = value.warehouseInventory;
   const history = value.priceHistory;
   const shortages = value.shortages;
+  const activity = value.recentMarketActivity;
   if (
     !isRecord(world) ||
     !Array.isArray(world.cells) ||
@@ -235,7 +251,9 @@ function isLocalSimulationSaveV1(
       (history[commodity] !== undefined &&
         !Array.isArray(history[commodity])) ||
       (shortages[commodity] !== undefined &&
-        !["none", "low", "critical"].includes(shortages[commodity] as string))
+        !["none", "low", "critical"].includes(shortages[commodity] as string)) ||
+      (activity !== undefined &&
+        (!isRecord(activity) || !isMarketActivity(activity[commodity])))
     )
       return false;
   }
@@ -272,6 +290,9 @@ export class LocalGameSimulation {
       );
       const priceHistory = commodityRecord<PricePoint[]>([]);
       const shortages = commodityRecord<ShortageLevel>("none");
+      const recentMarketActivity = commodityRecord<MarketActivity>(
+        emptyMarketActivity(),
+      );
       for (const commodity of commodityIds) {
         const savedHistory = restored.priceHistory[commodity];
         priceHistory[commodity] = Array.isArray(savedHistory)
@@ -282,13 +303,16 @@ export class LocalGameSimulation {
                 priceCents: marketPriceCents(
                   commodity,
                   warehouseInventory[commodity],
-                  restored.marketTick,
                 ),
               },
             ];
         shortages[commodity] =
           restored.shortages[commodity] ??
           shortageLevel(commodity, warehouseInventory[commodity]);
+        recentMarketActivity[commodity] = {
+          ...(restored.recentMarketActivity?.[commodity] ??
+            emptyMarketActivity()),
+        };
       }
       this.state = {
         simulationTime: restored.simulationTime,
@@ -323,6 +347,7 @@ export class LocalGameSimulation {
               })),
             }
           : null,
+        recentMarketActivity,
       };
       for (const building of this.producers) {
         const existing = this.state.productionStates.get(building.id);
@@ -387,19 +412,29 @@ export class LocalGameSimulation {
       wood: 3,
       stone: 0,
     });
-    const priceHistory = Object.fromEntries(
-      commodityIds.map((commodity) => [
-        commodity,
-        Array.from({ length: 5 }, (_, index) => ({
+    const priceHistory = commodityRecord<PricePoint[]>([]);
+    for (const commodity of commodityIds) {
+      let previousPriceCents = marketDefinitions[commodity].basePriceCents;
+      priceHistory[commodity] = Array.from({ length: 5 }, (_, index) => {
+        const activity = emptyMarketActivity();
+        const analysis = marketPriceAnalysis(
+          commodity,
+          warehouseInventory[commodity],
+          previousPriceCents,
+          activity,
+        );
+        previousPriceCents = analysis.priceCents;
+        return {
           time: startTime - (4 - index) * 5_000,
-          priceCents: marketPriceCents(
-            commodity,
-            warehouseInventory[commodity],
-            index,
-          ),
-        })),
-      ]),
-    ) as Record<Commodity, PricePoint[]>;
+          priceCents: analysis.priceCents,
+          availableInventory: warehouseInventory[commodity],
+          recentSupply: activity.supply,
+          recentDemand: activity.demand,
+          recentConsumption: activity.consumption,
+          priceReasons: analysis.reasons,
+        };
+      });
+    }
     this.state = {
       simulationTime: startTime,
       revision: 0,
@@ -467,6 +502,9 @@ export class LocalGameSimulation {
       nextEvent: shipments.length ? 4 : 3,
       foodConsumptionUpdatedAt: startTime,
       lastFoodConsumption: null,
+      recentMarketActivity: commodityRecord<MarketActivity>(
+        emptyMarketActivity(),
+      ),
     };
   }
 
@@ -554,6 +592,12 @@ export class LocalGameSimulation {
             })),
           }
         : null,
+      recentMarketActivity: Object.fromEntries(
+        commodityIds.map((commodity) => [
+          commodity,
+          { ...this.state.recentMarketActivity[commodity] },
+        ]),
+      ) as Record<Commodity, MarketActivity>,
     };
   }
 
@@ -587,7 +631,15 @@ export class LocalGameSimulation {
       const consumptionTime =
         this.state.foodConsumptionUpdatedAt +
         populationPolicy.foodConsumptionPeriodMs;
-      const boundaryTime = Math.min(arrivalTime, consumptionTime);
+      const marketTime = Math.max(
+        this.state.simulationTime,
+        this.state.marketUpdatedAt + 5_000,
+      );
+      const boundaryTime = Math.min(
+        arrivalTime,
+        consumptionTime,
+        marketTime,
+      );
       if (boundaryTime > simulationTime) break;
       this.advanceProducersTo(boundaryTime);
       this.advanceMarket(boundaryTime);
@@ -601,6 +653,9 @@ export class LocalGameSimulation {
         const shipment = arrivals[arrivalIndex++];
         this.state.warehouseInventory[shipment.cargo.commodity] +=
           shipment.cargo.quantity;
+        this.addMarketActivity(shipment.cargo.commodity, {
+          supply: shipment.cargo.quantity,
+        });
         this.addEvent(
           shipment.arrivalTime,
           "logistics",
@@ -624,6 +679,11 @@ export class LocalGameSimulation {
         this.state.warehouseInventory = { ...result.inventory };
         this.state.lastFoodConsumption = result.consumption;
         this.state.foodConsumptionUpdatedAt = boundaryTime;
+        for (const source of result.consumption.sources)
+          this.addMarketActivity(source.commodity, {
+            demand: source.unitsConsumed,
+            consumption: source.unitsConsumed,
+          });
       }
       this.state.simulationTime = boundaryTime;
     }
@@ -649,6 +709,14 @@ export class LocalGameSimulation {
       );
       this.state.productionStates.set(building.id, resolution.state);
       this.state.warehouseInventory = { ...resolution.inventory };
+      for (const [commodity, quantity] of Object.entries(
+        resolution.consumedInputs,
+      ) as [Commodity, number][]) {
+        this.addMarketActivity(commodity, {
+          demand: quantity,
+          consumption: quantity,
+        });
+      }
     }
   }
 
@@ -700,6 +768,10 @@ export class LocalGameSimulation {
       number,
     ][]) {
       this.state.warehouseInventory[commodity] -= quantity;
+      this.addMarketActivity(commodity, {
+        demand: quantity,
+        consumption: quantity,
+      });
     }
     this.state.world = world;
     if (isProducerType(building.type)) {
@@ -1012,6 +1084,7 @@ export class LocalGameSimulation {
       );
     const revenueCents = listing.priceCents * quantity;
     this.state.warehouseInventory[commodity] -= quantity;
+    this.addMarketActivity(commodity, { demand: quantity });
     this.state.cashCents += revenueCents;
     this.state.marketTick++;
     this.state.marketUpdatedAt = this.state.simulationTime;
@@ -1033,8 +1106,19 @@ export class LocalGameSimulation {
     return buildMarketListings(
       this.state.warehouseInventory,
       this.state.priceHistory,
-      this.state.marketTick,
     );
+  }
+
+  private addMarketActivity(
+    commodity: Commodity,
+    activity: Partial<MarketActivity>,
+  ) {
+    const current = this.state.recentMarketActivity[commodity];
+    this.state.recentMarketActivity[commodity] = {
+      supply: current.supply + (activity.supply ?? 0),
+      demand: current.demand + (activity.demand ?? 0),
+      consumption: current.consumption + (activity.consumption ?? 0),
+    };
   }
 
   private addEvent(
@@ -1058,15 +1142,30 @@ export class LocalGameSimulation {
       const previous =
         history.at(-1)?.priceCents ??
         marketDefinitions[commodity].basePriceCents;
-      const priceCents = marketPriceCents(
+      const activity = this.state.recentMarketActivity[commodity];
+      const analysis = marketPriceAnalysis(
         commodity,
         this.state.warehouseInventory[commodity],
-        this.state.marketTick,
+        previous,
+        activity,
       );
+      const priceCents = analysis.priceCents;
       this.state.priceHistory[commodity] = retainMarketPriceHistory(
-        [...history, { time, priceCents }],
+        [
+          ...history,
+          {
+            time,
+            priceCents,
+            availableInventory: this.state.warehouseInventory[commodity],
+            recentSupply: activity.supply,
+            recentDemand: activity.demand,
+            recentConsumption: activity.consumption,
+            priceReasons: analysis.reasons,
+          },
+        ],
         time,
       );
+      this.state.recentMarketActivity[commodity] = emptyMarketActivity();
       const shortage = shortageLevel(
         commodity,
         this.state.warehouseInventory[commodity],
@@ -1095,16 +1194,14 @@ export class LocalGameSimulation {
   }
 
   private advanceMarket(simulationTime: number) {
-    const elapsedTicks = Math.min(
-      24,
-      Math.floor((simulationTime - this.state.marketUpdatedAt) / 5_000),
+    const elapsedTicks = Math.floor(
+      (simulationTime - this.state.marketUpdatedAt) / 5_000,
     );
     for (let index = 0; index < elapsedTicks; index++) {
       this.state.marketTick++;
       this.state.marketUpdatedAt += 5_000;
       this.recordMarket(this.state.marketUpdatedAt);
     }
-    if (elapsedTicks === 24) this.state.marketUpdatedAt = simulationTime;
   }
 
   private economySnapshot(): ProductionSnapshot {

@@ -1,6 +1,6 @@
 import type { WarehouseInventory } from "./logistics";
 import type { Commodity, ProductionSite } from "./production";
-import { commodityDefinitions, commodityIds } from "./commodities";
+import { commodityDefinitions } from "./commodities";
 
 export const marketDefinitions: Record<
   Commodity,
@@ -8,41 +8,76 @@ export const marketDefinitions: Record<
     name: string;
     basePriceCents: number;
     desiredStock: number;
-    demandPerTick: number;
+    criticalStock: number;
   }>
 > = {
   food: {
     name: commodityDefinitions.food.name,
     basePriceCents: 600,
     desiredStock: 12,
-    demandPerTick: 4,
+    criticalStock: 4,
   },
   wood: {
     name: commodityDefinitions.wood.name,
     basePriceCents: 850,
     desiredStock: 10,
-    demandPerTick: 3,
+    criticalStock: 3,
   },
   stone: {
     name: commodityDefinitions.stone.name,
     basePriceCents: 1_100,
     desiredStock: 8,
-    demandPerTick: 2,
+    criticalStock: 2,
   },
-  crops: { name: commodityDefinitions.crops.name, basePriceCents: 450, desiredStock: 10, demandPerTick: 2 },
-  lumber: { name: commodityDefinitions.lumber.name, basePriceCents: 1_250, desiredStock: 8, demandPerTick: 1 },
-  cut_stone: { name: commodityDefinitions.cut_stone.name, basePriceCents: 1_600, desiredStock: 7, demandPerTick: 1 },
-  animal_feed: { name: commodityDefinitions.animal_feed.name, basePriceCents: 700, desiredStock: 8, demandPerTick: 1 },
-  livestock: { name: commodityDefinitions.livestock.name, basePriceCents: 1_500, desiredStock: 5, demandPerTick: 1 },
-  raw_meat: { name: commodityDefinitions.raw_meat.name, basePriceCents: 1_100, desiredStock: 6, demandPerTick: 1 },
-  cooked_meat: { name: commodityDefinitions.cooked_meat.name, basePriceCents: 1_700, desiredStock: 6, demandPerTick: 1 },
-  prepared_meal: { name: commodityDefinitions.prepared_meal.name, basePriceCents: 2_400, desiredStock: 6, demandPerTick: 1 },
-  iron_ore: { name: commodityDefinitions.iron_ore.name, basePriceCents: 1_300, desiredStock: 8, demandPerTick: 1 },
-  iron: { name: commodityDefinitions.iron.name, basePriceCents: 2_100, desiredStock: 6, demandPerTick: 1 },
-  iron_tools: { name: commodityDefinitions.iron_tools.name, basePriceCents: 3_800, desiredStock: 4, demandPerTick: 1 },
+  crops: { name: commodityDefinitions.crops.name, basePriceCents: 450, desiredStock: 10, criticalStock: 2 },
+  lumber: { name: commodityDefinitions.lumber.name, basePriceCents: 1_250, desiredStock: 8, criticalStock: 1 },
+  cut_stone: { name: commodityDefinitions.cut_stone.name, basePriceCents: 1_600, desiredStock: 7, criticalStock: 1 },
+  animal_feed: { name: commodityDefinitions.animal_feed.name, basePriceCents: 700, desiredStock: 8, criticalStock: 1 },
+  livestock: { name: commodityDefinitions.livestock.name, basePriceCents: 1_500, desiredStock: 5, criticalStock: 1 },
+  raw_meat: { name: commodityDefinitions.raw_meat.name, basePriceCents: 1_100, desiredStock: 6, criticalStock: 1 },
+  cooked_meat: { name: commodityDefinitions.cooked_meat.name, basePriceCents: 1_700, desiredStock: 6, criticalStock: 1 },
+  prepared_meal: { name: commodityDefinitions.prepared_meal.name, basePriceCents: 2_400, desiredStock: 6, criticalStock: 1 },
+  iron_ore: { name: commodityDefinitions.iron_ore.name, basePriceCents: 1_300, desiredStock: 8, criticalStock: 1 },
+  iron: { name: commodityDefinitions.iron.name, basePriceCents: 2_100, desiredStock: 6, criticalStock: 1 },
+  iron_tools: { name: commodityDefinitions.iron_tools.name, basePriceCents: 3_800, desiredStock: 4, criticalStock: 1 },
 };
 
-export type PricePoint = Readonly<{ time: number; priceCents: number }>;
+export type MarketActivity = Readonly<{
+  supply: number;
+  demand: number;
+  consumption: number;
+}>;
+
+export const emptyMarketActivity = (): MarketActivity => ({
+  supply: 0,
+  demand: 0,
+  consumption: 0,
+});
+
+export const marketPricingPolicy = {
+  inventoryPressureWeight: 0.65,
+  flowPressureWeight: 0.35,
+  targetAdjustmentRate: 0.4,
+  maximumChangePerObservation: 0.12,
+  minimumBasePriceMultiplier: 0.4,
+  maximumBasePriceMultiplier: 2,
+} as const;
+
+export type MarketSupplyStatus =
+  | "critical_shortage"
+  | "shortage"
+  | "balanced"
+  | "oversupplied";
+
+export type PricePoint = Readonly<{
+  time: number;
+  priceCents: number;
+  availableInventory?: number;
+  recentSupply?: number;
+  recentDemand?: number;
+  recentConsumption?: number;
+  priceReasons?: readonly string[];
+}>;
 export const marketChartTimeframes = [
   { id: "1s", label: "1s", durationMs: 1_000 },
   { id: "1m", label: "1m", durationMs: 60_000 },
@@ -157,8 +192,12 @@ export type MarketListing = Readonly<{
   trendPercent: number;
   available: number;
   desiredStock: number;
-  demandPerTick: number;
+  recentSupply: number;
+  recentDemand: number;
+  recentConsumption: number;
   shortage: ShortageLevel;
+  supplyStatus: MarketSupplyStatus;
+  priceReasons: readonly string[];
   history: readonly PricePoint[];
 }>;
 
@@ -187,25 +226,102 @@ export type MarketSnapshot = Readonly<{
   events: readonly EconomyEvent[];
 }>;
 
+const clamp = (value: number, minimum: number, maximum: number) =>
+  Math.max(minimum, Math.min(maximum, value));
+
+export function marketPriceAnalysis(
+  commodity: Commodity,
+  available: number,
+  previousPriceCents: number,
+  activity: MarketActivity,
+) {
+  const definition = marketDefinitions[commodity];
+  const inventoryPressure = clamp(
+    (definition.desiredStock - available) / definition.desiredStock,
+    -1,
+    1,
+  );
+  const flowPressure = clamp(
+    (activity.demand - activity.supply) / definition.desiredStock,
+    -1,
+    1,
+  );
+  const rawTarget =
+    definition.basePriceCents *
+    (1 +
+      inventoryPressure * marketPricingPolicy.inventoryPressureWeight +
+      flowPressure * marketPricingPolicy.flowPressureWeight);
+  const targetPriceCents = clamp(
+    Math.round(rawTarget),
+    Math.round(
+      definition.basePriceCents *
+        marketPricingPolicy.minimumBasePriceMultiplier,
+    ),
+    Math.round(
+      definition.basePriceCents *
+        marketPricingPolicy.maximumBasePriceMultiplier,
+    ),
+  );
+  const previous = Math.max(1, previousPriceCents);
+  const desiredChange = Math.round(
+    (targetPriceCents - previous) * marketPricingPolicy.targetAdjustmentRate,
+  );
+  const maximumChange = Math.max(
+    1,
+    Math.round(previous * marketPricingPolicy.maximumChangePerObservation),
+  );
+  const priceCents = Math.max(
+    1,
+    previous + clamp(desiredChange, -maximumChange, maximumChange),
+  );
+  const reasons: string[] = [];
+  if (available < definition.desiredStock)
+    reasons.push(
+      `Inventory ${available} is below the target of ${definition.desiredStock}.`,
+    );
+  else if (available > definition.desiredStock)
+    reasons.push(
+      `Inventory ${available} is above the target of ${definition.desiredStock}.`,
+    );
+  if (activity.demand > activity.supply)
+    reasons.push(
+      `Recent demand ${activity.demand} exceeded delivered supply ${activity.supply}.`,
+    );
+  else if (activity.supply > activity.demand)
+    reasons.push(
+      `Delivered supply ${activity.supply} exceeded recent demand ${activity.demand}.`,
+    );
+  if (activity.consumption > 0)
+    reasons.push(`Recent consumption used ${activity.consumption} units.`);
+  if (reasons.length === 0)
+    reasons.push("Inventory is at target and recent supply matched demand.");
+  const previousLabel = `$${(previous / 100).toFixed(2)}`;
+  const priceLabel = `$${(priceCents / 100).toFixed(2)}`;
+  const targetLabel = `$${(targetPriceCents / 100).toFixed(2)}`;
+  if (priceCents > previous)
+    reasons.push(
+      `Combined pressure moved price up from ${previousLabel} to ${priceLabel} toward ${targetLabel}.`,
+    );
+  else if (priceCents < previous)
+    reasons.push(
+      `Combined pressure moved price down from ${previousLabel} to ${priceLabel} toward ${targetLabel}.`,
+    );
+  else reasons.push(`Price held at ${priceLabel}; calculated target is ${targetLabel}.`);
+  return { priceCents, targetPriceCents, reasons } as const;
+}
+
 export function marketPriceCents(
   commodity: Commodity,
   available: number,
-  tick: number,
+  previousPriceCents = marketDefinitions[commodity].basePriceCents,
+  activity: MarketActivity = emptyMarketActivity(),
 ) {
-  const definition = marketDefinitions[commodity];
-  const scarcity = Math.max(
-    -0.5,
-    Math.min(
-      1,
-      (definition.desiredStock - available) / definition.desiredStock,
-    ),
-  );
-  const phase = commodityIds.indexOf(commodity) * 2;
-  const demandPulse = Math.sin((tick + phase) * 0.7) * 0.025;
-  return Math.max(
-    100,
-    Math.round(definition.basePriceCents * (1 + scarcity * 0.7 + demandPulse)),
-  );
+  return marketPriceAnalysis(
+    commodity,
+    available,
+    previousPriceCents,
+    activity,
+  ).priceCents;
 }
 
 export function shortageLevel(
@@ -213,23 +329,33 @@ export function shortageLevel(
   available: number,
 ): ShortageLevel {
   const definition = marketDefinitions[commodity];
-  if (available <= definition.demandPerTick) return "critical";
+  if (available <= definition.criticalStock) return "critical";
   if (available < definition.desiredStock) return "low";
   return "none";
+}
+
+export function marketSupplyStatus(
+  commodity: Commodity,
+  available: number,
+): MarketSupplyStatus {
+  const shortage = shortageLevel(commodity, available);
+  if (shortage === "critical") return "critical_shortage";
+  if (shortage === "low") return "shortage";
+  return available > marketDefinitions[commodity].desiredStock * 1.5
+    ? "oversupplied"
+    : "balanced";
 }
 
 export function buildMarketListings(
   inventory: WarehouseInventory,
   histories: Readonly<Record<Commodity, readonly PricePoint[]>>,
-  tick: number,
 ): MarketListing[] {
   return (Object.keys(marketDefinitions) as Commodity[]).map((commodity) => {
     const definition = marketDefinitions[commodity];
     const history = histories[commodity] ?? [];
     const available = inventory[commodity] ?? 0;
-    const priceCents =
-      history.at(-1)?.priceCents ??
-      marketPriceCents(commodity, available, tick);
+    const latest = history.at(-1);
+    const priceCents = latest?.priceCents ?? marketPriceCents(commodity, available);
     const previousPriceCents = history.at(-2)?.priceCents ?? priceCents;
     return {
       commodity,
@@ -244,8 +370,19 @@ export function buildMarketListings(
             ) / 10,
       available,
       desiredStock: definition.desiredStock,
-      demandPerTick: definition.demandPerTick,
+      recentSupply: latest?.recentSupply ?? 0,
+      recentDemand: latest?.recentDemand ?? 0,
+      recentConsumption: latest?.recentConsumption ?? 0,
       shortage: shortageLevel(commodity, available),
+      supplyStatus: marketSupplyStatus(commodity, available),
+      priceReasons:
+        latest?.priceReasons ??
+        marketPriceAnalysis(
+          commodity,
+          available,
+          priceCents,
+          emptyMarketActivity(),
+        ).reasons,
       history,
     };
   });

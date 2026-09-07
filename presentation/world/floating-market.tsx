@@ -329,6 +329,29 @@ export function FloatingMarket({
             />
           </div>
 
+          <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg border border-white/10 bg-black/10 p-2 text-center text-[10px]">
+            {[
+              ["Recent supply", selectedListing.recentSupply],
+              ["Recent demand", selectedListing.recentDemand],
+              ["Consumed", selectedListing.recentConsumption],
+            ].map(([label, value]) => (
+              <div key={label}>
+                <p className="text-slate-500">{label}</p>
+                <p className="mt-0.5 font-mono text-slate-200">{value}</p>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 rounded-lg bg-slate-950/40 p-2">
+            <p className="text-[9px] uppercase tracking-wide text-slate-500">
+              Price reasons
+            </p>
+            <ul className="mt-1 space-y-1 text-[10px] leading-4 text-slate-300">
+              {selectedListing.priceReasons.map((reason) => (
+                <li key={reason}>• {reason}</li>
+              ))}
+            </ul>
+          </div>
+
           <div className="mt-3 space-y-2">
             {relatedGroups.map(([label, related]) =>
               related.length ? (

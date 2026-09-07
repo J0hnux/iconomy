@@ -1711,7 +1711,7 @@ test("market listings expose price trends, shortages, and actionable opportuniti
       { time: 5_000, priceCents: 1_850 },
     ],
   };
-  const listings = buildMarketListings(inventory, histories, 1);
+  const listings = buildMarketListings(inventory, histories);
   assert.equal(
     listings.find((listing) => listing.commodity === "food").shortage,
     "none",
@@ -1725,7 +1725,7 @@ test("market listings expose price trends, shortages, and actionable opportuniti
     15.6,
   );
   assert.equal(shortageLevel("stone", 0), "critical");
-  assert.ok(marketPriceCents("stone", 0, 1) > marketPriceCents("stone", 8, 1));
+  assert.ok(marketPriceCents("stone", 0) > marketPriceCents("stone", 8));
   const sites = [
     {
       type: "lumber_camp",
@@ -2201,4 +2201,141 @@ test("timed household consumption is step-independent and survives save loading"
     legacy.read(saved.simulationTime).economy.logistics.warehouseInventory.food,
     saved.warehouseInventory.food,
   );
+});
+
+test("local price policy raises shortages and lowers oversupply for stated reasons", () => {
+  const {
+    marketPriceAnalysis,
+    marketSupplyStatus,
+  } = require("../world/domain/market.ts");
+  const shortage = marketPriceAnalysis("food", 2, 600, {
+    supply: 0,
+    demand: 5,
+    consumption: 5,
+  });
+  assert.ok(shortage.priceCents > 600);
+  assert.equal(marketSupplyStatus("food", 2), "critical_shortage");
+  assert.ok(shortage.reasons.some((reason) => /below the target/.test(reason)));
+  assert.ok(
+    shortage.reasons.some((reason) =>
+      /demand 5 exceeded delivered supply 0/.test(reason),
+    ),
+  );
+  assert.ok(
+    shortage.reasons.some((reason) => /consumption used 5/.test(reason)),
+  );
+  assert.ok(
+    shortage.reasons.some((reason) => /moved price up from/.test(reason)),
+  );
+
+  const oversupply = marketPriceAnalysis("food", 30, 600, {
+    supply: 12,
+    demand: 1,
+    consumption: 1,
+  });
+  assert.ok(oversupply.priceCents < 600);
+  assert.equal(marketSupplyStatus("food", 30), "oversupplied");
+  assert.ok(
+    oversupply.reasons.some((reason) => /above the target/.test(reason)),
+  );
+  assert.ok(
+    oversupply.reasons.some((reason) =>
+      /supply 12 exceeded recent demand 1/.test(reason),
+    ),
+  );
+  assert.ok(
+    oversupply.reasons.some((reason) => /moved price down from/.test(reason)),
+  );
+  assert.deepEqual(
+    marketPriceAnalysis("food", 30, 600, {
+      supply: 12,
+      demand: 1,
+      consumption: 1,
+    }),
+    oversupply,
+  );
+});
+
+test("authoritative inventory flows feed local market activity exactly once", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const initial = simulation.read(1_000).economy;
+  const cropShipment = initial.logistics.shipments.find(
+    (shipment) => shipment.cargo.commodity === "crops",
+  );
+  const arrived = simulation.read(cropShipment.arrivalTime).economy;
+  assert.equal(arrived.logistics.warehouseInventory.crops, 4);
+  const afterSupply = simulation.read(cropShipment.arrivalTime + 5_000).economy;
+  const crops = afterSupply.market.listings.find(
+    (listing) => listing.commodity === "crops",
+  );
+  assert.equal(crops.available, 4);
+  assert.equal(crops.recentSupply, 4);
+  assert.equal(crops.recentDemand, 0);
+  assert.equal(crops.recentConsumption, 0);
+  assert.ok(
+    crops.priceReasons.some((reason) =>
+      /Delivered supply 4 exceeded recent demand 0/.test(reason),
+    ),
+  );
+  const nextObservation = simulation.read(
+    cropShipment.arrivalTime + 10_000,
+  ).economy.market.listings.find((listing) => listing.commodity === "crops");
+  assert.equal(nextObservation.recentSupply, 0);
+
+  const afterHouseholds = simulation.read(66_000).economy;
+  const food = afterHouseholds.market.listings.find(
+    (listing) => listing.commodity === "food",
+  );
+  assert.equal(food.available, 3);
+  assert.equal(food.recentDemand, 5);
+  assert.equal(food.recentConsumption, 5);
+  assert.ok(
+    food.priceReasons.some((reason) => /Recent consumption used 5/.test(reason)),
+  );
+});
+
+test("pending local market activity remains deterministic across save loading", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const direct = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const shipment = direct
+    .read(1_000)
+    .economy.logistics.shipments.find(
+      (candidate) => candidate.cargo.commodity === "crops",
+    );
+  direct.read(shipment.arrivalTime);
+  const save = JSON.parse(JSON.stringify(direct.exportSave()));
+  const restored = LocalGameSimulation.fromSave(save);
+  const nextTime = shipment.arrivalTime + 5_000;
+  assert.deepEqual(restored.read(nextTime), direct.read(nextTime));
+
+  delete save.recentMarketActivity;
+  const legacy = LocalGameSimulation.fromSave(save).read(save.simulationTime);
+  assert.ok(
+    legacy.economy.market.listings.every(
+      (listing) =>
+        listing.recentSupply === 0 &&
+        listing.recentDemand === 0 &&
+        listing.recentConsumption === 0,
+    ),
+  );
+});
+
+test("market prices and flow history are independent of read frequency", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const direct = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const frequent = new LocalGameSimulation(createStartingWorld(), 1_000);
+  direct.read(31_000);
+  for (let time = 6_000; time <= 31_000; time += 5_000)
+    frequent.read(time);
+  assert.deepEqual(frequent.exportSave(), direct.exportSave());
 });

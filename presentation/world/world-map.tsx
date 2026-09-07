@@ -1140,11 +1140,9 @@ export default function WorldMap({
                     </div>
                     <div className="mt-3 flex items-center justify-between gap-2">
                       <span
-                        className={`rounded-full px-2 py-1 text-[10px] uppercase ${listing.shortage === "critical" ? "bg-red-400/10 text-red-300" : listing.shortage === "low" ? "bg-amber-300/10 text-amber-200" : "bg-emerald-300/10 text-emerald-200"}`}
+                        className={`rounded-full px-2 py-1 text-[10px] uppercase ${listing.supplyStatus === "critical_shortage" ? "bg-red-400/10 text-red-300" : listing.supplyStatus === "shortage" ? "bg-amber-300/10 text-amber-200" : listing.supplyStatus === "oversupplied" ? "bg-sky-300/10 text-sky-200" : "bg-emerald-300/10 text-emerald-200"}`}
                       >
-                        {listing.shortage === "none"
-                          ? "Supply stable"
-                          : `${listing.shortage} shortage`}
+                        {listing.supplyStatus.replaceAll("_", " ")}
                       </span>
                       <div className="flex gap-1">
                         <button
@@ -1174,6 +1172,30 @@ export default function WorldMap({
                           Sell all
                         </button>
                       </div>
+                    </div>
+                    <dl className="mt-3 grid grid-cols-3 gap-1 border-t border-white/10 pt-2 text-center text-[10px]">
+                      {[
+                        ["Recent supply", listing.recentSupply],
+                        ["Recent demand", listing.recentDemand],
+                        ["Consumed", listing.recentConsumption],
+                      ].map(([label, value]) => (
+                        <div key={label}>
+                          <dt className="text-slate-500">{label}</dt>
+                          <dd className="mt-0.5 font-mono text-slate-200">
+                            {value}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                    <div className="mt-2 rounded-lg bg-slate-950/40 px-2 py-1.5">
+                      <p className="text-[9px] uppercase tracking-wide text-slate-500">
+                        Price reasons
+                      </p>
+                      <ul className="mt-1 space-y-1 text-[10px] leading-4 text-slate-300">
+                        {listing.priceReasons.map((reason) => (
+                          <li key={reason}>• {reason}</li>
+                        ))}
+                      </ul>
                     </div>
                   </article>
                 ))}

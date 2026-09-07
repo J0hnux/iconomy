@@ -253,6 +253,20 @@ For the terminal check, use the bottom Market action, search for Crops, switch t
 
 For consumption verification, note the Food Required and Food Available values, accelerate to 5×, and observe a completed period reduce edible Warehouse inventory. Main Food identifies what was eaten. Continue until Food Supply falls below 100%, then restore supply by producing and dispatching Crops, Basic Food, Cooked Meat, or Prepared Meals to the primary Warehouse.
 
+## Milestone 18: local supply, demand, and pricing
+
+- Each Novagrad market listing now reports current Warehouse inventory, recently delivered supply, recent demand, recent physical consumption, current price, trend, supply condition, and the measured reasons behind its latest price observation.
+- Market activity comes from authoritative inventory movements. Shipment arrivals count as local supply; household and production inputs count as demand and consumption; construction materials count as demand and consumption; accepted player sales count as demand. Producer-local goods do not enter supply until their shipment reaches the primary Warehouse.
+- One pricing policy combines inventory pressure with recent demand-versus-supply pressure, moves the previous quote toward that target, and caps each observation's movement. Low or declining inventory pushes upward; excess inventory and deliveries above demand push downward.
+- The previous sine-based demand pulse was removed. With unchanged inventory and balanced flows, prices converge on their explained target and then remain stable instead of oscillating without economic cause.
+- Critical shortage, shortage, balanced, and oversupplied conditions come from configured stock targets. Price reasons state whether inventory is above or below target, whether demand exceeded delivered supply, whether supply exceeded demand, and how much was recently consumed.
+- Activity is accumulated between the existing five-second market observations and reset only after being recorded. Genuine history points carry the resulting price context while the existing Line, Candlestick, timeframe, and OHLC systems continue reading the same history.
+- Pending activity is included in version 1 saves. Older version 1 saves default to zero recent activity and begin using the new causal pricing policy at their next market observation.
+
+For local-market verification, inspect a commodity's Recent supply, Recent demand, Consumed, and Price reasons fields. Deliver a large shipment and observe supply and inventory pressure lower its target price as stock becomes excessive. Sell or consume inventory faster than deliveries replace it and observe shortage pressure raise the price. Identical saved states and simulation-time advances produce identical quotes and explanations.
+
+Milestone 18 is the second simulation milestone after the Milestone 16.7 gameplay integration. The next economy milestone must be the player-facing Milestone 19 market integration before another simulation-heavy system is added.
+
 ## Run and verify
 
 ```bash
