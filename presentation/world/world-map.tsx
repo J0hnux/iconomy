@@ -17,12 +17,14 @@ import {
 } from "@/world/domain/settlement";
 import type {
   Commodity,
+  DispatchPolicy,
   ProductionSnapshot,
   ProductionSite,
 } from "@/world/domain/production";
 import {
   availableRecipes,
   defaultRecipeByProducer,
+  dispatchPolicies,
   isProducerType,
   productionPriorities,
   productionRecipes,
@@ -116,6 +118,21 @@ const terrainNames: Record<TerrainType, string> = {
 
 const money = (cents: number) =>
   `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const dispatchPolicyLabels: Record<DispatchPolicy, string> = {
+  manual: "Manual",
+  when_full: "When full",
+  continuous: "Continuous",
+};
+
+const dispatchPolicyHints: Record<DispatchPolicy, string> = {
+  manual:
+    "Output waits at the site until you dispatch it. Holding stock back keeps it off the market and protects the price.",
+  when_full:
+    "Ships a full load whenever storage fills. Batched arrivals move the price in steps.",
+  continuous:
+    "Ships as soon as anything is stored. Steady supply pushes the price down.",
+};
 
 const marketConditionTone: Record<MarketCondition, string> = {
   severe_shortage: "text-red-300",
@@ -588,6 +605,12 @@ export default function WorldMap({
       "Changing production priority…",
       () => `Production priority set to ${priority}.`,
     );
+  const setDispatchPolicy = (site: ProductionSite, policy: DispatchPolicy) =>
+    issueProductionCommand(
+      { type: "set_dispatch_policy", buildingId: site.buildingId, policy },
+      "Changing delivery…",
+      () => `${site.name} delivery set to ${dispatchPolicyLabels[policy]}.`,
+    );
   const upgradeProduction = (site: ProductionSite) =>
     issueProductionCommand(
       { type: "upgrade_production", buildingId: site.buildingId },
@@ -932,7 +955,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestone 28
+              Prototype / Milestone 28.5
             </p>
           </div>
         </div>
@@ -2579,6 +2602,29 @@ export default function WorldMap({
                 </div>
                 <p className="mt-2 text-[10px] leading-4 text-slate-500">
                   Higher priority receives scarce warehouse inputs first. Labor remains manually assigned.
+                </p>
+              </div>
+              <div className="mt-3 border-t border-white/10 pt-3">
+                <span className="text-[10px] uppercase tracking-[0.16em] text-slate-400">
+                  Delivery
+                </span>
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {dispatchPolicies.map((policy) => (
+                    <button
+                      key={policy}
+                      aria-pressed={selectedProduction.dispatchPolicy === policy}
+                      className={`${button} px-2 py-1 text-[11px] ${selectedProduction.dispatchPolicy === policy ? "border-sky-300/60 bg-sky-400/10 text-sky-100" : ""}`}
+                      disabled={productionBusy}
+                      onClick={() =>
+                        void setDispatchPolicy(selectedProduction, policy)
+                      }
+                    >
+                      {dispatchPolicyLabels[policy]}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                  {dispatchPolicyHints[selectedProduction.dispatchPolicy]}
                 </p>
               </div>
               <div className="mt-3 flex items-center justify-between text-xs">

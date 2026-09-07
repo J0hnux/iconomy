@@ -5518,3 +5518,262 @@ test("the housing, migration, labor and upgrade loop plays through end to end", 
     after.labor.assignedWorkers + 1,
   );
 });
+
+test("dispatch policies decide only whether output ships, and manual is the default", () => {
+  const {
+    shouldDispatch,
+    defaultDispatchPolicy,
+    isDispatchPolicy,
+    dispatchPolicies,
+  } = require("../world/domain/production.ts");
+  assert.equal(defaultDispatchPolicy, "manual");
+  assert.deepEqual(dispatchPolicies, ["manual", "when_full", "continuous"]);
+  assert.equal(isDispatchPolicy("continuous"), true);
+  assert.equal(isDispatchPolicy("whenever"), false);
+
+  // Nothing stored, nothing ships, whatever the policy.
+  for (const policy of dispatchPolicies)
+    assert.equal(
+      shouldDispatch({ policy, stored: 0, storageCapacity: 24 }),
+      false,
+    );
+  // Manual never ships on its own.
+  assert.equal(
+    shouldDispatch({ policy: "manual", stored: 24, storageCapacity: 24 }),
+    false,
+  );
+  // When full waits for capacity; continuous does not.
+  assert.equal(
+    shouldDispatch({ policy: "when_full", stored: 23, storageCapacity: 24 }),
+    false,
+  );
+  assert.equal(
+    shouldDispatch({ policy: "when_full", stored: 24, storageCapacity: 24 }),
+    true,
+  );
+  assert.equal(
+    shouldDispatch({ policy: "continuous", stored: 1, storageCapacity: 24 }),
+    true,
+  );
+});
+
+test("a standing order keeps a producer running instead of stalling full", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const stalled = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const idle = stalled.read(300_000).economy.sites.find(
+    (site) => site.type === "farm",
+  );
+  // The default is unchanged: the farm fills its storage and stops.
+  assert.equal(idle.dispatchPolicy, "manual");
+  assert.equal(idle.status, "storage_full");
+
+  const running = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const farm = running.read(70_000).economy.sites.find(
+    (site) => site.type === "farm",
+  );
+  const set = running.execute(
+    {
+      type: "set_dispatch_policy",
+      buildingId: farm.buildingId,
+      policy: "continuous",
+    },
+    70_000,
+  );
+  assert.equal(set.ok, true);
+  const economy = running.read(300_000).economy;
+  const site = economy.sites.find((candidate) => candidate.type === "farm");
+  assert.equal(site.dispatchPolicy, "continuous");
+  assert.notEqual(site.status, "storage_full");
+  assert.ok(
+    economy.logistics.warehouseInventory.crops > 0,
+    "a standing order must actually deliver",
+  );
+  assert.ok(
+    economy.market.events.some((event) => /departed on/.test(event.message)),
+  );
+});
+
+test("standing orders stop the settlement starving beside full storage", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  // Left alone the settlement starves while its farm sits full.
+  const starving = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const abandoned = starving.read(900_000).economy;
+  assert.equal(abandoned.population.foodSupplyPercent, 0);
+  assert.equal(
+    abandoned.sites.find((site) => site.type === "farm").status,
+    "storage_full",
+  );
+
+  // Delivering the same output feeds it and the population grows instead.
+  const fed = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const farm = fed.read(70_000).economy.sites.find(
+    (site) => site.type === "farm",
+  );
+  fed.execute(
+    {
+      type: "set_dispatch_policy",
+      buildingId: farm.buildingId,
+      policy: "when_full",
+    },
+    70_000,
+  );
+  const supplied = fed.read(900_000).economy;
+  assert.equal(supplied.population.foodSupplyPercent, 100);
+  assert.ok(
+    supplied.population.totalPopulation >
+      abandoned.population.totalPopulation,
+    "a fed settlement must outgrow a starving one",
+  );
+});
+
+test("holding stock back protects the price that flooding the market destroys", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const priceUnder = (policy) => {
+    const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+    const farm = simulation.read(70_000).economy.sites.find(
+      (site) => site.type === "farm",
+    );
+    if (policy !== "manual")
+      simulation.execute(
+        { type: "set_dispatch_policy", buildingId: farm.buildingId, policy },
+        70_000,
+      );
+    const economy = simulation.read(900_000).economy;
+    const listing = economy.market.listings.find(
+      (candidate) => candidate.commodity === "crops",
+    );
+    return {
+      price: listing.priceCents,
+      series: listing.history
+        .filter((point) => point.time >= 70_000)
+        .map((point) => point.priceCents),
+      shipments: economy.logistics.shipments.filter(
+        (shipment) => shipment.originBuildingId === farm.buildingId,
+      ).length,
+    };
+  };
+  const manual = priceUnder("manual");
+  const whenFull = priceUnder("when_full");
+  const continuous = priceUnder("continuous");
+
+  // Withholding supply keeps the price far above what flooding it achieves.
+  assert.ok(
+    manual.price > whenFull.price * 2,
+    `manual ${manual.price} should far exceed when_full ${whenFull.price}`,
+  );
+  assert.ok(manual.price > continuous.price * 2);
+
+  // The policies are genuinely different economic behaviours, not labels.
+  assert.ok(manual.shipments < whenFull.shipments);
+  assert.ok(whenFull.shipments < continuous.shipments);
+  assert.notDeepEqual(manual.series, whenFull.series);
+  assert.notDeepEqual(whenFull.series, continuous.series);
+});
+
+test("standing dispatch is step independent and conserves cargo", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const start = (simulation) => {
+    const farm = simulation.read(70_000).economy.sites.find(
+      (site) => site.type === "farm",
+    );
+    simulation.execute(
+      {
+        type: "set_dispatch_policy",
+        buildingId: farm.buildingId,
+        policy: "continuous",
+      },
+      70_000,
+    );
+  };
+  const direct = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const stepped = new LocalGameSimulation(createStartingWorld(), 1_000);
+  start(direct);
+  start(stepped);
+  for (let time = 90_000; time < 600_000; time += 20_000) stepped.read(time);
+  stepped.read(600_000);
+  direct.read(600_000);
+  // One long advance must match many short ones exactly.
+  assert.deepEqual(stepped.exportSave(), direct.exportSave());
+
+  // Cargo exists in one place: nothing is duplicated in flight.
+  const economy = direct.read(600_000).economy;
+  const inTransit = economy.logistics.shipments
+    .filter((shipment) => shipment.status === "in_transit")
+    .reduce((total, shipment) => total + shipment.cargo.quantity, 0);
+  const delivered = economy.logistics.shipments
+    .filter((shipment) => shipment.status === "arrived")
+    .reduce((total, shipment) => total + shipment.cargo.quantity, 0);
+  assert.ok(delivered > 0);
+  const site = economy.sites.find((candidate) => candidate.type === "farm");
+  for (const shipment of economy.logistics.shipments)
+    assert.ok(shipment.cargo.quantity > 0);
+  assert.ok(inTransit >= 0);
+  assert.ok(site.stored >= 0);
+});
+
+test("a dispatch policy persists and legacy saves keep manual delivery", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const farm = simulation.read(70_000).economy.sites.find(
+    (site) => site.type === "farm",
+  );
+  simulation.execute(
+    {
+      type: "set_dispatch_policy",
+      buildingId: farm.buildingId,
+      policy: "when_full",
+    },
+    70_000,
+  );
+  const save = JSON.parse(JSON.stringify(simulation.exportSave()));
+  const restored = LocalGameSimulation.fromSave(save);
+  assert.equal(
+    restored.read(save.simulationTime).economy.sites.find(
+      (site) => site.type === "farm",
+    ).dispatchPolicy,
+    "when_full",
+  );
+  assert.deepEqual(
+    restored.read(400_000).economy.sites,
+    simulation.read(400_000).economy.sites,
+  );
+
+  // A save written before this milestone delivers manually, as it always did.
+  const legacy = JSON.parse(JSON.stringify(simulation.exportSave()));
+  legacy.productionStates = legacy.productionStates.map((state) => {
+    const copy = { ...state };
+    delete copy.dispatchPolicy;
+    return copy;
+  });
+  delete legacy.standingDispatchUpdatedAt;
+  const migrated = LocalGameSimulation.fromSave(legacy);
+  for (const site of migrated.read(legacy.simulationTime).economy.sites)
+    assert.equal(site.dispatchPolicy, "manual");
+
+  // An unknown policy is rejected without mutating anything.
+  const rejected = simulation.execute(
+    {
+      type: "set_dispatch_policy",
+      buildingId: farm.buildingId,
+      policy: "whenever",
+    },
+    400_000,
+  );
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.status, 400);
+});

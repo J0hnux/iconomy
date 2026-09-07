@@ -339,6 +339,45 @@ export const defaultRecipeByProducer: Record<ProducerType, RecipeId> = {
   workshop: "make_basic_food",
 };
 
+/**
+ * How a site delivers its output to the warehouse.
+ *
+ * Local delivery costs nothing, so these policies differ only in when goods
+ * reach the market — and that timing moves the price. Continuous supplies
+ * steadily and pushes the price down, when_full delivers in batches, and
+ * manual lets the player hold stock back and choose the moment.
+ */
+export const dispatchPolicies = ["manual", "when_full", "continuous"] as const;
+export type DispatchPolicy = (typeof dispatchPolicies)[number];
+
+/** Manual keeps existing saves and existing habits working unchanged. */
+export const defaultDispatchPolicy: DispatchPolicy = "manual";
+
+/**
+ * Cadence for standing orders. Matches the market observation interval so a
+ * policy's effect on price is visible at the resolution the chart records.
+ */
+export const standingDispatchPeriodMs = 5_000;
+
+export function isDispatchPolicy(value: unknown): value is DispatchPolicy {
+  return (
+    typeof value === "string" &&
+    dispatchPolicies.includes(value as DispatchPolicy)
+  );
+}
+
+/** Whether a standing order should ship this site's output right now. */
+export function shouldDispatch(input: {
+  policy: DispatchPolicy;
+  stored: number;
+  storageCapacity: number;
+}) {
+  if (input.stored <= 0) return false;
+  if (input.policy === "continuous") return true;
+  if (input.policy === "when_full") return input.stored >= input.storageCapacity;
+  return false;
+}
+
 export const productionPriorities = ["low", "normal", "high"] as const;
 export type ProductionPriority = (typeof productionPriorities)[number];
 
@@ -381,6 +420,7 @@ export type ProductionState = Readonly<{
   recipeId?: RecipeId;
   paused?: boolean;
   priority?: ProductionPriority;
+  dispatchPolicy?: DispatchPolicy;
   assignedWorkers: number;
   stored: number;
   progressMs: number;
@@ -404,6 +444,7 @@ export type ProductionSite = ProductionState &
     destinationStorage: "site";
     paused: boolean;
     priority: ProductionPriority;
+    dispatchPolicy: DispatchPolicy;
     expectedOutputPerCycle: number;
     tier: ProductionTier;
     /** Output per cycle divided by the workers the recipe requires. */
@@ -838,6 +879,7 @@ export function describeProduction(
     recipeId: selected.id,
     paused: state.paused ?? false,
     priority: state.priority ?? "normal",
+    dispatchPolicy: state.dispatchPolicy ?? defaultDispatchPolicy,
     type: building.type,
     name:
       building.type === "lumber_camp"

@@ -392,6 +392,17 @@ For verification, select the starting Farm and note its primitive tier at 2 outp
 
 For verification, select the Farm and read the two options side by side. Upgrading is blocked until an Iron Tools unit is held, so run the iron chain or import one, then upgrade: a worker is released, output per worker rises from two to five, and the credits are charged once. Assign that worker to a short-staffed site. Then compare: with spare workers and no tools, building a second Farm produces more in total; with tight labor, the upgraded Farm produces more per worker. Fill housing to capacity and watch the HUD report that migration is closed until more houses are built.
 
+## Milestone 28.5: standing dispatch orders
+
+- Each production site carries a delivery policy. Manual holds output at the site until the player dispatches it by hand, When full ships a load whenever storage fills, and Continuous ships as soon as anything is stored. Manual remains the default, so existing saves and habits are unchanged.
+- Local delivery costs nothing, so the policies differ only in when goods reach the market, and that timing moves the price. Withholding supply keeps the price up; flooding the market drives it to the floor.
+- Measured over the same fifteen minutes with one Farm: Manual rested at $5.47 having shipped once, When full at $1.81 after eighteen shipments, and Continuous at $1.81 after eighty-four. Selling twenty-four Crops earns $131.28 under Manual against $43.44 under either automatic policy.
+- The choice is not free in the other direction. Under Manual the Farm fills its storage, stops producing, and the settlement starves to a population of six. Under either automatic policy food supply reaches full and the population grows to twelve instead.
+- Standing orders run on their own five second cadence, matching the market observation interval, so a policy's effect on price is visible at the resolution the chart records. Dispatch is never a side effect of reading the simulation, so one long advance produces exactly the same result as many short ones.
+- Manual and automatic delivery build shipments through one shared path, so the two can never drift apart, and the existing dispatch command is unchanged.
+
+For verification, watch a Farm reach full storage and stall under Manual. Set it to Continuous and accelerate time: production no longer stalls, crops reach the warehouse, and the price falls steadily. Switch back to Manual, let stock build at the site, and watch the price recover before dispatching by hand into it. Set a second producer to When full and compare the stepped price pattern against the smoother continuous one.
+
 ## Run and verify
 
 ```bash

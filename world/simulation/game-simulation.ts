@@ -36,8 +36,12 @@ import {
   isProducerType,
   isProductionPriority,
   isRecipeId,
+  defaultDispatchPolicy,
+  isDispatchPolicy,
   productionRecipes,
   productionUpgradePolicy,
+  shouldDispatch,
+  standingDispatchPeriodMs,
   recipeForState,
   recipeOutput,
   resolveProduction,
@@ -47,6 +51,7 @@ import {
   type ProductionSnapshot,
   type ProductionState,
   type ProducerType,
+  type DispatchPolicy,
   type ProductionPriority,
   type RecipeId,
 } from "../domain/production";
@@ -165,6 +170,11 @@ export type GameCommand =
     }>
   | Readonly<{ type: "upgrade_production"; buildingId: string }>
   | Readonly<{
+      type: "set_dispatch_policy";
+      buildingId: string;
+      policy: DispatchPolicy;
+    }>
+  | Readonly<{
       type: "set_industry_paused";
       commodity: Commodity;
       paused: boolean;
@@ -235,6 +245,7 @@ export type LocalSimulationSaveV1 = Readonly<{
   pendingPlayerProduction?: Readonly<Record<Commodity, number>>;
   migrationUpdatedAt?: number;
   lastMigration?: MigrationResult | null;
+  standingDispatchUpdatedAt?: number;
 }>;
 
 type MutableSimulationState = {
@@ -265,6 +276,7 @@ type MutableSimulationState = {
   pendingPlayerProduction: Record<Commodity, number>;
   migrationUpdatedAt: number;
   lastMigration: MigrationResult | null;
+  standingDispatchUpdatedAt: number;
 };
 
 export function createStartingWorld() {
@@ -434,6 +446,8 @@ function isLocalSimulationSaveV1(
       (state.paused === undefined || typeof state.paused === "boolean") &&
       (state.priority === undefined ||
         isProductionPriority(state.priority)) &&
+      (state.dispatchPolicy === undefined ||
+        isDispatchPolicy(state.dispatchPolicy)) &&
       isNonnegativeInteger(state.assignedWorkers) &&
       (!state.paused || state.assignedWorkers === 0) &&
       isNonnegativeInteger(state.stored) &&
@@ -540,6 +554,8 @@ export class LocalGameSimulation {
         ),
         migrationUpdatedAt:
           restored.migrationUpdatedAt ?? restored.simulationTime,
+        standingDispatchUpdatedAt:
+          restored.standingDispatchUpdatedAt ?? restored.simulationTime,
         lastMigration: restored.lastMigration
           ? {
               ...restored.lastMigration,
@@ -563,6 +579,7 @@ export class LocalGameSimulation {
           recipeId: selected.id,
           paused: existing?.paused ?? false,
           priority: existing?.priority ?? "normal",
+          dispatchPolicy: existing?.dispatchPolicy ?? defaultDispatchPolicy,
           assignedWorkers: existing?.assignedWorkers ?? 0,
           stored: migratesLegacyFarmState ? 0 : (existing?.stored ?? 0),
           progressMs: migratesLegacyFarmState ? 0 : (existing?.progressMs ?? 0),
@@ -651,6 +668,7 @@ export class LocalGameSimulation {
               recipeId: selected.id,
               paused: false,
               priority: "normal",
+              dispatchPolicy: defaultDispatchPolicy,
               assignedWorkers:
                 building.type === "farm" || building.type === "quarry"
                   ? selected.requiredWorkers
@@ -716,6 +734,7 @@ export class LocalGameSimulation {
       pendingPlayerProduction: commodityRecord(0),
       migrationUpdatedAt: startTime,
       lastMigration: null,
+      standingDispatchUpdatedAt: startTime,
     };
   }
 
@@ -771,6 +790,8 @@ export class LocalGameSimulation {
         return this.createPlayerRegionalShipment(command);
       case "upgrade_production":
         return this.upgradeProduction(command.buildingId);
+      case "set_dispatch_policy":
+        return this.setDispatchPolicy(command.buildingId, command.policy);
       case "set_industry_paused":
         return this.setIndustryPaused(command.commodity, command.paused);
       case "demolish":
@@ -828,6 +849,7 @@ export class LocalGameSimulation {
       ),
       pendingPlayerProduction: { ...this.state.pendingPlayerProduction },
       migrationUpdatedAt: this.state.migrationUpdatedAt,
+      standingDispatchUpdatedAt: this.state.standingDispatchUpdatedAt,
       lastMigration: this.state.lastMigration
         ? {
             ...this.state.lastMigration,
@@ -848,24 +870,21 @@ export class LocalGameSimulation {
     this.assertTime(simulationTime);
     if (simulationTime < this.state.simulationTime)
       throw new RangeError("Simulation time cannot move backward.");
-    const arrivals = this.state.shipments
-      .filter(
-        (shipment) =>
-          shipment.status === "in_transit" &&
-          shipment.arrivalTime <= simulationTime,
-      )
-      .sort(
-        (a, b) => a.arrivalTime - b.arrivalTime || a.id.localeCompare(b.id),
-      );
-    let arrivalIndex = 0;
     while (true) {
-      const arrivalTime =
-        arrivalIndex < arrivals.length
-          ? Math.max(
-              this.state.simulationTime,
-              arrivals[arrivalIndex].arrivalTime,
-            )
-          : Number.POSITIVE_INFINITY;
+      // Computed each pass, like regional arrivals below: standing orders can
+      // create shipments inside this loop, and a snapshot taken beforehand
+      // would never deliver them, making one long advance differ from several
+      // short ones.
+      const arrivalTime = this.state.shipments
+        .filter((shipment) => shipment.status === "in_transit")
+        .reduce(
+          (earliest, shipment) =>
+            Math.min(
+              earliest,
+              Math.max(this.state.simulationTime, shipment.arrivalTime),
+            ),
+          Number.POSITIVE_INFINITY,
+        );
       const consumptionTime =
         this.state.foodConsumptionUpdatedAt +
         populationPolicy.foodConsumptionPeriodMs;
@@ -890,6 +909,8 @@ export class LocalGameSimulation {
         );
       const migrationTime =
         this.state.migrationUpdatedAt + populationPolicy.migration.periodMs;
+      const standingDispatchTime =
+        this.state.standingDispatchUpdatedAt + standingDispatchPeriodMs;
       const boundaryTime = Math.min(
         arrivalTime,
         consumptionTime,
@@ -897,18 +918,22 @@ export class LocalGameSimulation {
         npcCityTime,
         regionalArrivalTime,
         migrationTime,
+        standingDispatchTime,
       );
       if (boundaryTime > simulationTime) break;
       this.advanceProducersTo(boundaryTime);
       this.advanceMarket(boundaryTime);
-      while (
-        arrivalIndex < arrivals.length &&
-        Math.max(
-          this.state.simulationTime,
-          arrivals[arrivalIndex].arrivalTime,
-        ) === boundaryTime
-      ) {
-        const shipment = arrivals[arrivalIndex++];
+      for (const shipment of this.state.shipments
+        .filter(
+          (candidate) =>
+            candidate.status === "in_transit" &&
+            candidate.arrivalTime <= boundaryTime,
+        )
+        .sort(
+          (first, second) =>
+            first.arrivalTime - second.arrivalTime ||
+            first.id.localeCompare(second.id),
+        )) {
         this.state.warehouseInventory[shipment.cargo.commodity] +=
           shipment.cargo.quantity;
         this.addMarketActivity(shipment.cargo.commodity, {
@@ -954,6 +979,8 @@ export class LocalGameSimulation {
           });
         }
       }
+      if (standingDispatchTime === boundaryTime)
+        this.advanceStandingDispatch(boundaryTime);
       if (migrationTime === boundaryTime) this.advanceMigration(boundaryTime);
       if (npcCityTime === boundaryTime) {
         this.state.npcCities = advanceNpcCities(this.state.npcCities);
@@ -1422,6 +1449,67 @@ export class LocalGameSimulation {
     return this.success();
   }
 
+  private setDispatchPolicy(
+    buildingId: string,
+    policy: DispatchPolicy,
+  ): CommandResult {
+    const building = this.producers.find(
+      (candidate) => candidate.id === buildingId,
+    );
+    const state = this.state.productionStates.get(buildingId);
+    if (!building || !state)
+      return this.failure(404, "Production site was not found.");
+    if (!isDispatchPolicy(policy))
+      return this.failure(400, "Dispatch policy is invalid.");
+    if ((state.dispatchPolicy ?? defaultDispatchPolicy) === policy)
+      return this.success();
+    this.state.productionStates.set(buildingId, {
+      ...state,
+      dispatchPolicy: policy,
+      updatedAt: this.state.simulationTime,
+    });
+    const name = buildingDefinitions[building.type].name;
+    this.addEvent(
+      this.state.simulationTime,
+      "logistics",
+      policy === "manual"
+        ? `${name} holds its output until dispatched by hand.`
+        : policy === "when_full"
+          ? `${name} ships a full load whenever its storage fills.`
+          : `${name} ships its output continuously.`,
+    );
+    return this.success();
+  }
+
+  /**
+   * Runs standing orders on a fixed cadence.
+   *
+   * Deliberately not a side effect of producer resolution: departure times
+   * would then depend on when a read happened, and two runs that stepped time
+   * differently would diverge. Sites are visited in a stable order so shipment
+   * sequence numbers stay reproducible.
+   */
+  private advanceStandingDispatch(time: number) {
+    this.state.standingDispatchUpdatedAt = time;
+    const ordered = [...this.producers].sort((first, second) =>
+      first.id.localeCompare(second.id),
+    );
+    for (const building of ordered) {
+      const state = this.state.productionStates.get(building.id);
+      if (!state) continue;
+      const recipe = recipeForState(state, building.type);
+      if (
+        !shouldDispatch({
+          policy: state.dispatchPolicy ?? defaultDispatchPolicy,
+          stored: state.stored,
+          storageCapacity: recipe.storageCapacity,
+        })
+      )
+        continue;
+      this.shipStoredOutput(building.id, time);
+    }
+  }
+
   private setProductionPriority(
     buildingId: string,
     priority: ProductionPriority,
@@ -1448,51 +1536,67 @@ export class LocalGameSimulation {
     return this.success();
   }
 
-  private dispatchProduction(buildingId: string): CommandResult {
+  /**
+   * Moves a site's stored output onto its road route in one operation, so the
+   * cargo exists in exactly one place throughout. Shared by the manual command
+   * and by standing orders; the two must never construct shipments differently.
+   */
+  private shipStoredOutput(
+    buildingId: string,
+    departureTime: number,
+  ): Shipment | null {
     const state = this.state.productionStates.get(buildingId);
-    if (!state) return this.failure(404, "Production site was not found.");
-    if (state.stored === 0)
-      return this.failure(422, "This production site has no output to ship.");
+    if (!state || state.stored === 0) return null;
     const building = this.producers.find(
       (candidate) => candidate.id === buildingId,
     );
     const route = this.state.world.logisticsRoutes?.find(
       (candidate) => candidate.originBuildingId === buildingId,
     );
-    if (!building || !route || !this.warehouse)
-      return this.failure(
-        422,
-        "This production site has no road connection to the warehouse.",
-      );
+    if (!building || !route || !this.warehouse) return null;
     const collected = state.stored;
-    const selected = recipeForState(state, building.type);
-    const output = recipeOutput(selected);
+    const output = recipeOutput(recipeForState(state, building.type));
     this.state.productionStates.set(buildingId, {
       ...state,
       stored: 0,
       progressMs: 0,
       laborRemainder: 0,
-      updatedAt: this.state.simulationTime,
+      updatedAt: departureTime,
     });
     const shipment: Shipment = {
       id: `shipment-${this.state.nextShipment++}`,
       routeId: route.id,
       originBuildingId: buildingId,
       destinationBuildingId: this.warehouse.id,
-      cargo: {
-        commodity: output.commodity,
-        quantity: collected,
-      },
-      departureTime: this.state.simulationTime,
-      arrivalTime: this.state.simulationTime + route.durationMs,
+      cargo: { commodity: output.commodity, quantity: collected },
+      departureTime,
+      arrivalTime: departureTime + route.durationMs,
       status: "in_transit",
     };
     this.state.shipments.push(shipment);
     this.addEvent(
-      this.state.simulationTime,
+      departureTime,
       "logistics",
       `${collected} ${shipment.cargo.commodity} departed on ${route.name}.`,
     );
+    return shipment;
+  }
+
+  private dispatchProduction(buildingId: string): CommandResult {
+    const state = this.state.productionStates.get(buildingId);
+    if (!state) return this.failure(404, "Production site was not found.");
+    if (state.stored === 0)
+      return this.failure(422, "This production site has no output to ship.");
+    const collected = state.stored;
+    const shipment = this.shipStoredOutput(
+      buildingId,
+      this.state.simulationTime,
+    );
+    if (!shipment)
+      return this.failure(
+        422,
+        "This production site has no road connection to the warehouse.",
+      );
     return {
       ok: true,
       status: 200,
