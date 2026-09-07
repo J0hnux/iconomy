@@ -85,6 +85,9 @@ import {
   storeLocalSave,
 } from "./save-repository";
 
+/** Periodic autosave cadence; player commands bypass it. */
+const autosaveIntervalMs = 10_000;
+
 const button =
   "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-amber-200 disabled:opacity-30";
 
@@ -195,6 +198,7 @@ export default function WorldMap({
   const [regionalTradeMessage, setRegionalTradeMessage] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const saveFailedRef = useRef(false);
+  const lastSaveWallTimeRef = useRef(0);
   const [simulationSpeed, setSimulationSpeed] = useState<SimulationSpeed>(1);
   const drag = useRef<{
     id: number;
@@ -249,7 +253,22 @@ export default function WorldMap({
     setProduction(readModel.economy);
   }, []);
 
-  const persistSimulation = useCallback((simulation: LocalGameSimulation) => {
+  /**
+   * Autosave is throttled: the periodic tick only writes every
+   * autosaveIntervalMs, while a player command forces an immediate write so a
+   * deliberate action is never the thing that gets lost.
+   */
+  const persistSimulation = useCallback((
+    simulation: LocalGameSimulation,
+    options?: { force?: boolean },
+  ) => {
+    const now = Date.now();
+    if (
+      !options?.force &&
+      now - lastSaveWallTimeRef.current < autosaveIntervalMs
+    )
+      return;
+    lastSaveWallTimeRef.current = now;
     void storeLocalSave(simulation.exportSave())
       .then(() => {
         if (saveFailedRef.current) {
@@ -503,7 +522,7 @@ export default function WorldMap({
       if (!simulation) throw new Error("Local simulation is starting.");
       const result = simulation.execute(command, currentSimulationTime());
       applyReadModel(result.readModel);
-      persistSimulation(simulation);
+      persistSimulation(simulation, { force: true });
       if (!result.ok) throw new Error(result.error);
       setProductionMessage(successMessage(result));
     } catch (error) {
@@ -589,7 +608,7 @@ export default function WorldMap({
         currentSimulationTime(),
       );
       applyReadModel(result.readModel);
-      persistSimulation(simulation);
+      persistSimulation(simulation, { force: true });
       if (!result.ok) throw new Error(result.error);
       if (!result.sale) throw new Error("The market did not return a sale receipt.");
       setLastMarketSale(result.sale);
@@ -616,7 +635,7 @@ export default function WorldMap({
       if (!simulation) throw new Error("Local simulation is starting.");
       const result = simulation.execute(command, currentSimulationTime());
       applyReadModel(result.readModel);
-      persistSimulation(simulation);
+      persistSimulation(simulation, { force: true });
       if (!result.ok) throw new Error(result.error);
       if (!result.regionalShipment)
         throw new Error("The regional exchange did not return a shipment.");
@@ -777,7 +796,7 @@ export default function WorldMap({
         currentSimulationTime(),
       );
       applyReadModel(result.readModel);
-      persistSimulation(simulation);
+      persistSimulation(simulation, { force: true });
       if (!result.ok || !result.building) {
         setBuildMessage(
           result.ok ? "Construction could not be completed." : result.error,
@@ -813,7 +832,7 @@ export default function WorldMap({
         currentSimulationTime(),
       );
       applyReadModel(result.readModel);
-      persistSimulation(simulation);
+      persistSimulation(simulation, { force: true });
       if (!result.ok) throw new Error(result.error);
       setSelected(null);
       setProductionMessage(null);
