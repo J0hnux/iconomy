@@ -2869,3 +2869,188 @@ test("compact browser saves round-trip exact simulation state and remain below l
   assert.ok(compact.length < 4_000_000);
   assert.doesNotThrow(() => LocalGameSimulation.fromSave(deserializeLocalSave(compact)));
 });
+
+test("NPC producers use shared recipes, finite labor, cash, and real inventories", () => {
+  const {
+    createNpcCompanies,
+    advanceNpcCompanies,
+  } = require("../world/domain/npc-companies.ts");
+  const { createNpcCities } = require("../world/domain/npc-cities.ts");
+  const { createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const cities = createNpcCities(createStartingWorld());
+  const companies = createNpcCompanies(cities);
+  const greenvaleBefore = cities.find((city) => city.id === "greenvale");
+  const pantryBefore = companies.find(
+    (company) => company.id === "greenvale-pantry",
+  );
+  const cropsBefore =
+    greenvaleBefore.inventory.crops + pantryBefore.inventory.crops;
+  const foodBefore = greenvaleBefore.inventory.food + pantryBefore.inventory.food;
+  const result = advanceNpcCompanies({
+    cities,
+    companies,
+    existingShipments: [],
+    time: 61_000,
+    nextShipmentSequence: 1,
+  });
+  const greenvaleAfter = result.cities.find((city) => city.id === "greenvale");
+  const pantryAfter = result.companies.find(
+    (company) => company.id === "greenvale-pantry",
+  );
+  assert.equal(
+    greenvaleAfter.inventory.crops + pantryAfter.inventory.crops,
+    cropsBefore - 20,
+  );
+  assert.equal(
+    greenvaleAfter.inventory.food + pantryAfter.inventory.food,
+    foodBefore + 30,
+  );
+  assert.equal(pantryAfter.inventory.food, 1);
+  assert.equal(pantryAfter.facilities[0].assignedWorkers, 2);
+  assert.ok(pantryAfter.facilities[0].assignedWorkers <= pantryAfter.workforce);
+  assert.ok(pantryAfter.cashCents !== pantryBefore.cashCents);
+  assert.equal(pantryAfter.decisions.at(-1).action, "produce");
+  assert.ok(
+    pantryAfter.decisions.at(-1).reasons.some((reason) =>
+      reason.includes("Labor:"),
+    ),
+  );
+});
+
+test("NPC traders buy real cargo, use shared logistics, and can realize profit or loss", () => {
+  const {
+    createNpcCompanies,
+    advanceNpcCompanies,
+    settleNpcCompanyShipment,
+  } = require("../world/domain/npc-companies.ts");
+  const { createNpcCities } = require("../world/domain/npc-cities.ts");
+  const {
+    settleRegionalShipment,
+    settleRegionalShipmentValue,
+  } = require("../world/domain/regional-logistics.ts");
+  const { createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const cities = createNpcCities(createStartingWorld());
+  const companies = createNpcCompanies(cities);
+  const traderBefore = companies.find(
+    (company) => company.id === "azure-mercantile",
+  );
+  const result = advanceNpcCompanies({
+    cities,
+    companies,
+    existingShipments: [],
+    time: 61_000,
+    nextShipmentSequence: 1,
+  });
+  const shipment = result.shipments[0];
+  assert.ok(shipment);
+  assert.equal(shipment.owner, "npc_company");
+  assert.equal(shipment.ownerId, traderBefore.id);
+  const originBefore = cities.find(
+    (city) => city.id === shipment.origin.cityId,
+  );
+  const originAfter = result.cities.find(
+    (city) => city.id === shipment.origin.cityId,
+  );
+  assert.equal(
+    originAfter.inventory[shipment.commodity],
+    originBefore.inventory[shipment.commodity] - shipment.quantity,
+  );
+  const traderAfterPurchase = result.companies.find(
+    (company) => company.id === traderBefore.id,
+  );
+  assert.equal(
+    traderAfterPurchase.cashCents,
+    traderBefore.cashCents - shipment.upfrontCostCents,
+  );
+  const profitableArrival = settleRegionalShipment(
+    result.cities,
+    shipment,
+    shipment.arrivalTime,
+  );
+  const afterProfit = settleNpcCompanyShipment(
+    result.companies,
+    profitableArrival.shipment,
+  ).find((company) => company.id === traderBefore.id);
+  assert.equal(
+    afterProfit.cashCents,
+    traderAfterPurchase.cashCents +
+      profitableArrival.shipment.actualRevenueCents,
+  );
+  assert.ok(profitableArrival.shipment.actualProfitCents > 0);
+
+  const losingArrival = settleRegionalShipmentValue(
+    shipment,
+    shipment.arrivalTime,
+    1,
+  );
+  const afterLoss = settleNpcCompanyShipment(
+    result.companies,
+    losingArrival,
+  ).find((company) => company.id === traderBefore.id);
+  assert.ok(losingArrival.actualProfitCents < 0);
+  assert.equal(afterLoss.realizedTradeProfitCents, losingArrival.actualProfitCents);
+  assert.ok(
+    afterLoss.decisions.at(-1).reasons.some((reason) =>
+      reason.includes("Realized profit"),
+    ),
+  );
+});
+
+test("NPC expanders add only labor-usable capacity when expected return is attractive", () => {
+  const {
+    createNpcCompanies,
+    advanceNpcCompanies,
+  } = require("../world/domain/npc-companies.ts");
+  const { createNpcCities } = require("../world/domain/npc-cities.ts");
+  const { createStartingWorld } = require("../world/simulation/game-simulation.ts");
+  const cities = createNpcCities(createStartingWorld());
+  const companies = createNpcCompanies(cities);
+  const before = companies.find((company) => company.id === "ironhold-works");
+  const result = advanceNpcCompanies({
+    cities,
+    companies,
+    existingShipments: [],
+    time: 61_000,
+    nextShipmentSequence: 1,
+  });
+  const after = result.companies.find(
+    (company) => company.id === "ironhold-works",
+  );
+  assert.equal(after.facilities[0].capacity, before.facilities[0].capacity + 1);
+  assert.equal(after.facilities[0].assignedWorkers, 6);
+  assert.ok(after.facilities[0].assignedWorkers <= after.workforce);
+  assert.equal(after.decisions.at(-1).action, "expand");
+  assert.ok(
+    after.decisions.at(-1).reasons.some((reason) =>
+      reason.includes("Expected margin"),
+    ),
+  );
+  assert.ok(after.cashCents < before.cashCents);
+});
+
+test("NPC company decisions are deterministic and remain compatible with legacy saves", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const start = 50_000;
+  const end = start + 6 * 60_000;
+  const direct = new LocalGameSimulation(createStartingWorld(), start);
+  const stepped = new LocalGameSimulation(createStartingWorld(), start);
+  direct.read(end);
+  for (let time = start + 60_000; time <= end; time += 60_000)
+    stepped.read(time);
+  assert.deepEqual(direct.exportSave(), stepped.exportSave());
+  assert.ok(
+    direct.exportSave().npcCompanies.every(
+      (company) => company.decisions.length > 0,
+    ),
+  );
+  const restored = LocalGameSimulation.fromSave(direct.exportSave());
+  assert.deepEqual(restored.exportSave(), direct.exportSave());
+  const legacy = { ...direct.exportSave() };
+  delete legacy.npcCompanies;
+  delete legacy.npcCompaniesUpdatedAt;
+  const migrated = LocalGameSimulation.fromSave(legacy);
+  assert.equal(migrated.read(end).economy.npcCompanies.length, 3);
+});

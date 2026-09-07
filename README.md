@@ -315,6 +315,17 @@ For verification, open **Regions**, sort regional Food quotes visually, and crea
 
 Autosaves use a compact version-1 storage envelope. Market observations are stored as numeric tuples and repeated price-explanation strings use a shared dictionary, while loading reconstructs the unchanged simulation save shape. Existing plain JSON version-1 saves still load and migrate to the compact format on their next autosave. If browser storage is unavailable or genuinely full, the simulation continues in memory and the HUD reports that newer progress is not being saved instead of throwing from the game loop.
 
+## Milestone 23: NPC companies and competition
+
+- Three named deterministic competitors establish the first company layer: Greenvale Pantry Co. produces processed food, Azure Mercantile trades regional price differences, and Ironhold Works extracts and expands Iron Ore capacity.
+- Companies own finite cash, commodity inventory, workforce, facilities, capacity, production progress, cumulative revenue and costs, and realized trading profit or loss. Their configurable policies vary risk tolerance, required margin, planning horizon, reserve preference, and expansion aggressiveness.
+- Producer and expander facilities use the existing production recipes and shared recipe-cycle executor. Inputs and equipment are purchased from genuine home-city inventory, labor limits elapsed productive work, consumable inputs disappear exactly once, outputs enter company inventory, and local sales transfer those goods into city inventory.
+- Company traders compare current regional prices after the existing distance-based transport quote. Buying removes genuine origin inventory and cash, cargo remains in the shared regional shipment ledger during transit, and selling credits the company at the destination's live arrival price. Price movement can therefore turn an attractive estimate into a realized loss.
+- Expansion spends company cash and adds capacity only when current recipe margins clear the company's threshold, sufficient reserve cash remains, and the existing workforce can use the new capacity. Expansion does not grant free labor or output.
+- The Company view exposes every competitor's role, home city, wallet, labor, capacity, trade profit/loss, latest decision, and economic reasons. Decision history is bounded and preserved with company state in compatible version-1 saves.
+
+For verification, open **Company** and accelerate to the next 60-second NPC period. Greenvale Pantry should report its labor, input purchases, output, and sales; Azure Mercantile should name its selected route and expected post-transport margin; Ironhold Works should explain expansion or why it deferred. Continue until the trader's shipment arrives and compare estimated with realized profit. Reload the save and confirm wallets, cargo, facilities, and decision histories remain unchanged.
+
 ## Run and verify
 
 ```bash

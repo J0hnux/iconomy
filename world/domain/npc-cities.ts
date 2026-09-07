@@ -12,6 +12,7 @@ import {
 import { consumeHouseholdFood } from "./population";
 import {
   isRecipeId,
+  executeRecipeCycles,
   productionRecipes,
   recipeIds,
   type RecipeId,
@@ -327,37 +328,14 @@ function produceAndConsume(city: NpcCityState): NpcCityState {
   for (const recipeId of recipeIds) {
     const plannedCycles = city.recipeCapacity[recipeId] ?? 0;
     if (plannedCycles === 0) continue;
-    const recipe = productionRecipes[recipeId];
-    const inputEntries = Object.entries(recipe.consumableInputs) as [
-      Commodity,
-      number,
-    ][];
-    const equipmentAvailable = Object.entries(recipe.equipmentRequirements).every(
-      ([commodity, quantity]) =>
-        inventory[commodity as Commodity] >= (quantity ?? 0),
-    );
-    if (!equipmentAvailable) continue;
-    const inputLimitedCycles = inputEntries.length
-      ? Math.min(
-          ...inputEntries.map(([commodity, quantity]) =>
-            Math.floor(inventory[commodity] / quantity),
-          ),
-        )
-      : plannedCycles;
-    const completedCycles = Math.min(plannedCycles, inputLimitedCycles);
-    for (const [commodity, quantity] of inputEntries) {
-      const consumed = quantity * completedCycles;
-      inventory[commodity] -= consumed;
-      recentConsumption[commodity] += consumed;
-    }
-    for (const [commodity, quantity] of Object.entries(recipe.outputs) as [
-      Commodity,
-      number,
-    ][]) {
-      const produced = quantity * completedCycles;
-      inventory[commodity] += produced;
-      recentProduction[commodity] += produced;
-    }
+    const resolution = executeRecipeCycles(recipeId, plannedCycles, inventory);
+    Object.assign(inventory, resolution.inventory);
+    for (const [commodity, quantity] of Object.entries(
+      resolution.consumedInputs,
+    ) as [Commodity, number][]) recentConsumption[commodity] += quantity;
+    for (const [commodity, quantity] of Object.entries(
+      resolution.producedOutputs,
+    ) as [Commodity, number][]) recentProduction[commodity] += quantity;
   }
   const household = consumeHouseholdFood(inventory, city.population);
   for (const source of household.consumption.sources)

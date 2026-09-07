@@ -8,6 +8,7 @@ import type { LogisticsSnapshot } from "./logistics";
 import type { MarketSnapshot } from "./market";
 import type { PopulationSnapshot } from "./population";
 import type { NpcCityState } from "./npc-cities";
+import type { NpcCompanyState } from "./npc-companies";
 import type { RegionalLogisticsSnapshot } from "./regional-logistics";
 import type { SurfaceCell, WorldPosition, WorldSnapshot } from "./world";
 import {
@@ -308,6 +309,7 @@ export type ProductionSnapshot = Readonly<{
   logistics: LogisticsSnapshot;
   market: MarketSnapshot;
   npcCities: readonly NpcCityState[];
+  npcCompanies: readonly NpcCompanyState[];
   regionalLogistics: RegionalLogisticsSnapshot;
 }>;
 
@@ -324,6 +326,64 @@ export function isProducerType(type: BuildingType): type is ProducerType {
 
 export function isRecipeId(value: unknown): value is RecipeId {
   return typeof value === "string" && recipeIds.includes(value as RecipeId);
+}
+
+export function executeRecipeCycles(
+  recipeId: RecipeId,
+  requestedCycles: number,
+  sourceInventory: Readonly<Partial<Record<Commodity, number>>>,
+) {
+  if (!Number.isSafeInteger(requestedCycles) || requestedCycles < 0)
+    throw new RangeError("Requested production cycles must be a nonnegative integer.");
+  const recipe = productionRecipes[recipeId];
+  const inventory = normalizeCommodityInventory(sourceInventory);
+  const consumedInputs: Partial<Record<Commodity, number>> = {};
+  const producedOutputs: Partial<Record<Commodity, number>> = {};
+  const equipmentAvailable = Object.entries(
+    recipe.equipmentRequirements,
+  ).every(
+    ([commodity, quantity]) =>
+      inventory[commodity as Commodity] >= (quantity ?? 0),
+  );
+  const inputEntries = Object.entries(recipe.consumableInputs) as [
+    Commodity,
+    number,
+  ][];
+  const inputLimitedCycles = inputEntries.length
+    ? Math.min(
+        ...inputEntries.map(([commodity, quantity]) =>
+          Math.floor(inventory[commodity] / quantity),
+        ),
+      )
+    : requestedCycles;
+  const completedCycles = equipmentAvailable
+    ? Math.min(requestedCycles, inputLimitedCycles)
+    : 0;
+  for (const [commodity, quantity] of inputEntries) {
+    const consumed = quantity * completedCycles;
+    inventory[commodity] -= consumed;
+    if (consumed > 0) consumedInputs[commodity] = consumed;
+  }
+  for (const [commodity, quantity] of Object.entries(recipe.outputs) as [
+    Commodity,
+    number,
+  ][]) {
+    const produced = quantity * completedCycles;
+    inventory[commodity] += produced;
+    if (produced > 0) producedOutputs[commodity] = produced;
+  }
+  return {
+    inventory,
+    completedCycles,
+    consumedInputs,
+    producedOutputs,
+    blockedReason:
+      completedCycles === requestedCycles
+        ? null
+        : !equipmentAvailable
+          ? "missing_equipment"
+          : "missing_inputs",
+  } as const;
 }
 
 export function availableRecipes(type: ProducerType) {

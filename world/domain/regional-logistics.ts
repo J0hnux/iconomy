@@ -16,7 +16,7 @@ export const regionalLogisticsPolicy = {
 } as const;
 
 export type RegionalShipmentStatus = "in_transit" | "arrived";
-export type RegionalShipmentOwner = "npc" | "player";
+export type RegionalShipmentOwner = "npc" | "player" | "npc_company";
 export type RegionalDestinationAction = "sell" | "store";
 
 export type RegionalTradeLocation = Readonly<{
@@ -48,6 +48,7 @@ export type RegionalShipment = Readonly<{
   arrivalTime: number;
   status: RegionalShipmentStatus;
   owner?: RegionalShipmentOwner;
+  ownerId?: string;
   destinationAction?: RegionalDestinationAction;
   originUnitPriceCents: number;
   estimatedDestinationUnitPriceCents: number;
@@ -144,6 +145,7 @@ export function createRegionalShipment(input: Readonly<{
   quantity: number;
   departureTime: number;
   owner: RegionalShipmentOwner;
+  ownerId?: string;
   destinationAction: RegionalDestinationAction;
   upfrontCostCents?: number;
 }>): RegionalShipment {
@@ -173,6 +175,7 @@ export function createRegionalShipment(input: Readonly<{
     arrivalTime: input.departureTime + transport.travelTimeMs,
     status: "in_transit",
     owner: input.owner,
+    ...(input.ownerId === undefined ? {} : { ownerId: input.ownerId }),
     destinationAction: input.destinationAction,
     originUnitPriceCents: input.origin.localPrices[input.commodity],
     estimatedDestinationUnitPriceCents:
@@ -405,7 +408,8 @@ export function settleRegionalShipmentValue(
       shipment.purchaseCostCents -
       shipment.transportCostCents,
     actualCashChangeCents:
-      shipment.owner === "player" && shipment.destinationAction === "sell"
+      (shipment.owner === "player" || shipment.owner === "npc_company") &&
+      shipment.destinationAction === "sell"
         ? actualRevenueCents
         : 0,
   };
@@ -484,11 +488,15 @@ export function isRegionalShipment(value: unknown): value is RegionalShipment {
           regionalLogisticsPolicy.travelTimeMsPerTile &&
     ["in_transit", "arrived"].includes(shipment.status as string) &&
     ((shipment.owner === undefined &&
+      shipment.ownerId === undefined &&
       shipment.destinationAction === undefined &&
       shipment.upfrontCostCents === undefined) ||
-      (["npc", "player"].includes(shipment.owner as string) &&
+      (["npc", "player", "npc_company"].includes(shipment.owner as string) &&
         ["sell", "store"].includes(shipment.destinationAction as string) &&
-        isNonnegativeInteger(shipment.upfrontCostCents))) &&
+        isNonnegativeInteger(shipment.upfrontCostCents) &&
+        (shipment.owner === "npc_company"
+          ? typeof shipment.ownerId === "string" && shipment.ownerId.length > 0
+          : shipment.ownerId === undefined))) &&
     isPositiveInteger(shipment.originUnitPriceCents) &&
     isPositiveInteger(shipment.estimatedDestinationUnitPriceCents) &&
     isNonnegativeInteger(shipment.purchaseCostCents) &&
@@ -520,7 +528,8 @@ export function isRegionalShipment(value: unknown): value is RegionalShipment {
         (shipment.actualCashChangeCents === undefined ||
           (isNonnegativeInteger(shipment.actualCashChangeCents) &&
             shipment.actualCashChangeCents ===
-              (shipment.owner === "player" &&
+              ((shipment.owner === "player" ||
+                shipment.owner === "npc_company") &&
               shipment.destinationAction === "sell"
                 ? shipment.actualRevenueCents
                 : 0)))

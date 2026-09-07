@@ -810,7 +810,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestone 22
+              Prototype / Milestone 23
             </p>
           </div>
         </div>
@@ -1564,6 +1564,79 @@ export default function WorldMap({
                   >
                     Go to settlement
                   </button>
+                </section>
+              )}
+              {production && (
+                <section
+                  className="mb-6 border-b border-white/10 pb-5"
+                  aria-label="NPC company competition"
+                >
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-violet-200">
+                    Competitors
+                  </p>
+                  <h2 className="mt-1 text-lg font-semibold">NPC companies</h2>
+                  <p className="mt-1 text-[10px] leading-4 text-slate-400">
+                    Deterministic firms use real city inventory, labor, recipes,
+                    cash, prices, and shipments.
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    {production.npcCompanies.map((company) => {
+                      const latest = company.decisions.at(-1);
+                      const assigned = company.facilities.reduce(
+                        (total, facility) =>
+                          total + facility.assignedWorkers,
+                        0,
+                      );
+                      return (
+                        <article
+                          key={company.id}
+                          className="rounded-xl border border-white/10 bg-black/15 p-3"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <h3 className="text-xs font-semibold text-slate-100">
+                                {company.name}
+                              </h3>
+                              <p className="mt-1 text-[9px] uppercase tracking-wide text-violet-200">
+                                {company.role} · {company.homeCityId.replaceAll("-", " ")}
+                              </p>
+                            </div>
+                            <span className="font-mono text-xs text-emerald-200">
+                              {money(company.cashCents)}
+                            </span>
+                          </div>
+                          <dl className="mt-2 grid grid-cols-3 gap-1 text-[10px]">
+                            <div>
+                              <dt className="text-slate-500">Labor</dt>
+                              <dd>{assigned}/{company.workforce}</dd>
+                            </div>
+                            <div>
+                              <dt className="text-slate-500">Capacity</dt>
+                              <dd>{company.facilities.reduce((sum, facility) => sum + facility.capacity, 0)}</dd>
+                            </div>
+                            <div>
+                              <dt className="text-slate-500">Trade P/L</dt>
+                              <dd className={company.realizedTradeProfitCents < 0 ? "text-rose-300" : "text-emerald-200"}>
+                                {money(company.realizedTradeProfitCents)}
+                              </dd>
+                            </div>
+                          </dl>
+                          {latest && (
+                            <div className="mt-2 border-t border-white/10 pt-2">
+                              <p className="text-[10px] font-medium text-slate-200">
+                                {latest.summary}
+                              </p>
+                              <ul className="mt-1 space-y-1 text-[10px] leading-4 text-slate-400">
+                                {latest.reasons.map((reason) => (
+                                  <li key={reason}>• {reason}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
                 </section>
               )}
               <section

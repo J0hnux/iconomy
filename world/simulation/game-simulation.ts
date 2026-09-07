@@ -72,6 +72,14 @@ import {
   type NpcCityState,
 } from "../domain/npc-cities";
 import {
+  advanceNpcCompanies,
+  cloneNpcCompany,
+  createNpcCompanies,
+  isNpcCompanyState,
+  settleNpcCompanyShipment,
+  type NpcCompanyState,
+} from "../domain/npc-companies";
+import {
   cloneRegionalShipment,
   createRegionalShipment,
   isRegionalShipment,
@@ -192,6 +200,8 @@ export type LocalSimulationSaveV1 = Readonly<{
   recentMarketActivity?: Readonly<Record<Commodity, MarketActivity>>;
   npcCities?: readonly NpcCityState[];
   npcCitiesUpdatedAt?: number;
+  npcCompanies?: readonly NpcCompanyState[];
+  npcCompaniesUpdatedAt?: number;
   regionalShipments?: readonly RegionalShipment[];
   nextRegionalShipment?: number;
 }>;
@@ -216,6 +226,8 @@ type MutableSimulationState = {
   recentMarketActivity: Record<Commodity, MarketActivity>;
   npcCities: NpcCityState[];
   npcCitiesUpdatedAt: number;
+  npcCompanies: NpcCompanyState[];
+  npcCompaniesUpdatedAt: number;
   regionalShipments: RegionalShipment[];
   nextRegionalShipment: number;
 };
@@ -308,6 +320,21 @@ function isLocalSimulationSaveV1(
         (value.simulationTime as number) -
             (value.npcCitiesUpdatedAt as number) >=
           npcCitySimulationPeriodMs)) ||
+    (value.npcCompanies !== undefined &&
+      (!Array.isArray(value.npcCompanies) ||
+        !value.npcCompanies.every(isNpcCompanyState) ||
+        new Set(
+          value.npcCompanies.map((company) =>
+            isRecord(company) ? company.id : undefined,
+          ),
+        ).size !== value.npcCompanies.length)) ||
+    (value.npcCompaniesUpdatedAt !== undefined &&
+      (!Number.isSafeInteger(value.npcCompaniesUpdatedAt) ||
+        (value.npcCompaniesUpdatedAt as number) >
+          (value.simulationTime as number) ||
+        (value.simulationTime as number) -
+            (value.npcCompaniesUpdatedAt as number) >=
+          npcCitySimulationPeriodMs)) ||
     (value.regionalShipments !== undefined &&
       (!Array.isArray(value.regionalShipments) ||
         !value.regionalShipments.every(isRegionalShipment) ||
@@ -399,6 +426,9 @@ export class LocalGameSimulation {
             emptyMarketActivity()),
         };
       }
+      const npcCities = (
+        restored.npcCities ?? createNpcCities(restored.world)
+      ).map(cloneNpcCity);
       this.state = {
         simulationTime: restored.simulationTime,
         revision: restored.revision,
@@ -433,11 +463,14 @@ export class LocalGameSimulation {
             }
           : null,
         recentMarketActivity,
-        npcCities: (restored.npcCities ?? createNpcCities(restored.world)).map(
-          cloneNpcCity,
-        ),
+        npcCities,
         npcCitiesUpdatedAt:
           restored.npcCitiesUpdatedAt ?? restored.simulationTime,
+        npcCompanies: (
+          restored.npcCompanies ?? createNpcCompanies(npcCities)
+        ).map(cloneNpcCompany),
+        npcCompaniesUpdatedAt:
+          restored.npcCompaniesUpdatedAt ?? restored.simulationTime,
         regionalShipments: (restored.regionalShipments ?? []).map(
           cloneRegionalShipment,
         ),
@@ -529,6 +562,7 @@ export class LocalGameSimulation {
         };
       });
     }
+    const npcCities = createNpcCities(world);
     this.state = {
       simulationTime: startTime,
       revision: 0,
@@ -599,8 +633,10 @@ export class LocalGameSimulation {
       recentMarketActivity: commodityRecord<MarketActivity>(
         emptyMarketActivity(),
       ),
-      npcCities: createNpcCities(world),
+      npcCities,
       npcCitiesUpdatedAt: startTime,
+      npcCompanies: createNpcCompanies(npcCities),
+      npcCompaniesUpdatedAt: startTime,
       regionalShipments: [],
       nextRegionalShipment: 1,
     };
@@ -700,6 +736,8 @@ export class LocalGameSimulation {
       ) as Record<Commodity, MarketActivity>,
       npcCities: this.state.npcCities.map(cloneNpcCity),
       npcCitiesUpdatedAt: this.state.npcCitiesUpdatedAt,
+      npcCompanies: this.state.npcCompanies.map(cloneNpcCompany),
+      npcCompaniesUpdatedAt: this.state.npcCompaniesUpdatedAt,
       regionalShipments: this.state.regionalShipments.map(
         cloneRegionalShipment,
       ),
@@ -811,6 +849,22 @@ export class LocalGameSimulation {
       if (npcCityTime === boundaryTime) {
         this.state.npcCities = advanceNpcCities(this.state.npcCities);
         this.state.npcCitiesUpdatedAt = boundaryTime;
+        const companyResult = advanceNpcCompanies({
+          cities: this.state.npcCities,
+          companies: this.state.npcCompanies,
+          existingShipments: this.state.regionalShipments,
+          time: boundaryTime,
+          nextShipmentSequence: this.state.nextRegionalShipment,
+        });
+        this.state.npcCities = companyResult.cities;
+        this.state.npcCompanies = companyResult.companies;
+        this.state.npcCompaniesUpdatedAt = boundaryTime;
+        this.state.regionalShipments = retainRegionalShipmentHistory([
+          ...this.state.regionalShipments,
+          ...companyResult.shipments,
+        ]);
+        this.state.nextRegionalShipment =
+          companyResult.nextShipmentSequence;
         const plan = planRegionalShipments(
           this.state.npcCities,
           this.state.regionalShipments,
@@ -862,6 +916,11 @@ export class LocalGameSimulation {
           )
             this.state.cashCents +=
               settledShipment.actualCashChangeCents ?? 0;
+          if (settledShipment.owner === "npc_company")
+            this.state.npcCompanies = settleNpcCompanyShipment(
+              this.state.npcCompanies,
+              settledShipment,
+            );
           if (settledShipment.owner === "player") {
             const outcome = settledShipment.actualProfitCents ?? 0;
             this.addEvent(
@@ -1596,6 +1655,7 @@ export class LocalGameSimulation {
         events: this.state.events.slice(-12).reverse(),
       },
       npcCities: this.state.npcCities.map(cloneNpcCity),
+      npcCompanies: this.state.npcCompanies.map(cloneNpcCompany),
       regionalLogistics: {
         shipments: this.state.regionalShipments.map(cloneRegionalShipment),
         locations: this.regionalTradeLocations(),
