@@ -1069,15 +1069,25 @@ test("dependency-driven recipes consume inputs, respect labor and storage, and r
     smelt_iron: ["workshop", { iron_ore: 2 }, { iron: 1 }],
     forge_iron_tools: ["workshop", { iron: 2 }, { iron_tools: 1 }],
   };
-  assert.deepEqual(Object.keys(productionRecipes), Object.keys(expectedRecipes));
-  for (const [recipeId, [producer, inputs, outputs]] of Object.entries(
-    expectedRecipes,
+  // Industrialised tiers are configuration on the same registry, so they are
+  // listed here too; they differ only by needing equipment they hold.
+  const expectedImprovedRecipes = {
+    grow_crops_improved: ["farm", {}, { crops: 5 }, { iron_tools: 1 }],
+    harvest_logs_improved: ["lumber_camp", {}, { wood: 4 }, { iron_tools: 1 }],
+    quarry_stone_improved: ["quarry", {}, { stone: 3 }, { iron_tools: 2 }],
+  };
+  assert.deepEqual(Object.keys(productionRecipes), [
+    ...Object.keys(expectedRecipes),
+    ...Object.keys(expectedImprovedRecipes),
+  ]);
+  for (const [recipeId, [producer, inputs, outputs, equipment]] of Object.entries(
+    { ...expectedRecipes, ...expectedImprovedRecipes },
   )) {
     const configured = productionRecipes[recipeId];
     assert.equal(configured.producer, producer);
     assert.deepEqual(configured.consumableInputs, inputs);
     assert.deepEqual(configured.outputs, outputs);
-    assert.deepEqual(configured.equipmentRequirements, {});
+    assert.deepEqual(configured.equipmentRequirements, equipment ?? {});
     assert.ok(configured.requiredWorkers > 0);
     assert.ok(configured.durationMs > 0);
     assert.ok(configured.storageCapacity > 0);
@@ -5009,5 +5019,245 @@ test("population change is step independent and survives save loading", () => {
     migrated.read(legacy.simulationTime + 200_000).economy.population
       .lastMigration !== null,
     "a legacy save resumes migrating",
+  );
+});
+
+test("industrialised tiers trade labor for manufactured capital", () => {
+  const {
+    productionRecipes,
+    upgradeRecipeFor,
+    outputPerWorker,
+  } = require("../world/domain/production.ts");
+
+  const upgraded = Object.values(productionRecipes).filter(
+    (recipe) => recipe.tier === "improved",
+  );
+  assert.ok(upgraded.length > 0);
+  for (const improved of upgraded) {
+    const base = productionRecipes[improved.upgradeOf];
+    assert.ok(base, `${improved.id} must industrialise a primitive recipe`);
+    assert.equal(base.tier, "primitive");
+    assert.equal(improved.producer, base.producer);
+
+    // Fewer workers, more output, and therefore more output per worker. Raw
+    // output alone is not enough: another primitive site could raise that too.
+    assert.ok(
+      improved.requiredWorkers < base.requiredWorkers,
+      `${improved.id} must need fewer workers than ${base.id}`,
+    );
+    const baseOutput = Object.values(base.outputs)[0];
+    const improvedOutput = Object.values(improved.outputs)[0];
+    assert.ok(improvedOutput > baseOutput);
+    assert.ok(outputPerWorker(improved.id) > outputPerWorker(base.id));
+
+    // It costs manufactured capital, and the primitive tier never does.
+    assert.ok(Object.keys(improved.equipmentRequirements).length > 0);
+    assert.deepEqual(base.equipmentRequirements, {});
+    assert.equal(upgradeRecipeFor(base.id).id, improved.id);
+  }
+  // Every primitive extractor keeps a toolless path, so a tier is a choice.
+  assert.equal(upgradeRecipeFor("grow_crops").id, "grow_crops_improved");
+  assert.equal(upgradeRecipeFor("forge_iron_tools"), undefined);
+});
+
+test("equipment is held rather than consumed and gates production entirely", () => {
+  const { executeRecipeCycles } = require("../world/domain/production.ts");
+  const { normalizeCommodityInventory } = require(
+    "../world/domain/commodities.ts",
+  );
+
+  // Tools enable cycles and survive them: capacity is occupied, not spent.
+  const equipped = executeRecipeCycles(
+    "grow_crops_improved",
+    3,
+    normalizeCommodityInventory({ iron_tools: 1 }),
+  );
+  assert.equal(equipped.completedCycles, 3);
+  assert.equal(equipped.inventory.crops, 15);
+  assert.equal(equipped.inventory.iron_tools, 1, "tools must not be consumed");
+  assert.deepEqual(equipped.consumedInputs, {});
+
+  // Without them the site produces nothing at all, not merely less.
+  const bare = executeRecipeCycles(
+    "grow_crops_improved",
+    3,
+    normalizeCommodityInventory({}),
+  );
+  assert.equal(bare.completedCycles, 0);
+  assert.equal(bare.blockedReason, "missing_equipment");
+  assert.deepEqual(bare.producedOutputs, {});
+
+  // Partial equipment is still insufficient.
+  const partial = executeRecipeCycles(
+    "quarry_stone_improved",
+    2,
+    normalizeCommodityInventory({ iron_tools: 1 }),
+  );
+  assert.equal(partial.completedCycles, 0);
+  assert.equal(partial.blockedReason, "missing_equipment");
+});
+
+test("industrialisation cannot create a bootstrap loop", () => {
+  const { productionRecipes } = require("../world/domain/production.ts");
+  // Nothing needed to make tools may itself require tools, or the first pair
+  // could never be produced.
+  for (const recipeId of ["mine_iron_ore", "smelt_iron", "forge_iron_tools"]) {
+    assert.deepEqual(
+      productionRecipes[recipeId].equipmentRequirements,
+      {},
+      `${recipeId} must not require the equipment it helps produce`,
+    );
+  }
+  // No improved tier may require its own output as equipment.
+  for (const recipe of Object.values(productionRecipes)) {
+    for (const equipment of Object.keys(recipe.equipmentRequirements))
+      assert.ok(
+        !(equipment in recipe.outputs),
+        `${recipe.id} would need its own output to run`,
+      );
+  }
+});
+
+test("upgrading a site frees labor and raises output through existing verbs", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const before = simulation.read(70_000).economy;
+  const farm = before.sites.find((site) => site.type === "farm");
+  assert.equal(farm.tier, "primitive");
+  assert.equal(farm.upgradeRecipeId, "grow_crops_improved");
+  const assignedBefore = before.labor.assignedWorkers;
+
+  // Upgrading uses the verbs that already exist: dispatch, restaff, reselect.
+  assert.equal(
+    simulation.execute(
+      { type: "dispatch_production", buildingId: farm.buildingId },
+      70_000,
+    ).ok,
+    true,
+  );
+  assert.equal(
+    simulation.execute(
+      { type: "set_workers", buildingId: farm.buildingId, workers: 1 },
+      70_000,
+    ).ok,
+    true,
+  );
+  const switched = simulation.execute(
+    { type: "set_recipe", buildingId: farm.buildingId, recipeId: "grow_crops_improved" },
+    70_000,
+  );
+  assert.equal(switched.ok, true);
+
+  const upgraded = switched.readModel.economy;
+  const site = upgraded.sites.find((candidate) => candidate.type === "farm");
+  assert.equal(site.tier, "improved");
+  assert.equal(site.requiredWorkers, 1);
+  assert.ok(site.outputPerWorkerPerCycle > farm.outputPerWorkerPerCycle);
+  // A worker is genuinely released to the rest of the economy.
+  assert.equal(upgraded.labor.assignedWorkers, assignedBefore - 1);
+  assert.ok(upgraded.labor.unassignedWorkers > before.labor.unassignedWorkers);
+  // Without tools it produces nothing and says so.
+  assert.equal(site.status, "missing_equipment");
+  assert.match(site.statusReason, /Iron Tools/);
+
+  // With tools, one worker outproduces the two it replaced.
+  const save = simulation.exportSave();
+  save.warehouseInventory.iron_tools = 1;
+  const equipped = LocalGameSimulation.fromSave(
+    JSON.parse(JSON.stringify(save)),
+  );
+  const ran = equipped.read(save.simulationTime + 50_000).economy;
+  const equippedSite = ran.sites.find((candidate) => candidate.type === "farm");
+  assert.equal(ran.logistics.warehouseInventory.iron_tools, 1);
+
+  const primitive = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const primitiveFarm = primitive.read(70_000).economy.sites.find(
+    (candidate) => candidate.type === "farm",
+  );
+  primitive.execute(
+    { type: "dispatch_production", buildingId: primitiveFarm.buildingId },
+    70_000,
+  );
+  const primitiveRan = primitive
+    .read(70_000 + 50_000)
+    .economy.sites.find((candidate) => candidate.type === "farm");
+  assert.ok(
+    equippedSite.stored > primitiveRan.stored,
+    `upgraded stored ${equippedSite.stored} with 1 worker should beat ${primitiveRan.stored} with ${primitiveRan.assignedWorkers}`,
+  );
+  assert.ok(equippedSite.assignedWorkers < primitiveRan.assignedWorkers);
+});
+
+test("a site short of tools reports demand for them", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const farm = simulation.read(70_000).economy.sites.find(
+    (site) => site.type === "farm",
+  );
+  simulation.execute(
+    { type: "dispatch_production", buildingId: farm.buildingId },
+    70_000,
+  );
+  simulation.execute(
+    { type: "set_workers", buildingId: farm.buildingId, workers: 1 },
+    70_000,
+  );
+  simulation.execute(
+    { type: "set_recipe", buildingId: farm.buildingId, recipeId: "grow_crops_improved" },
+    70_000,
+  );
+  const economy = simulation.read(140_000).economy;
+  const tools = economy.market.listings.find(
+    (listing) => listing.commodity === "iron_tools",
+  );
+  // Manufactured goods gain a consumer: the blocked site wants tools.
+  assert.ok(
+    tools.history.some((point) => (point.recentDemand ?? 0) > 0),
+    "an equipment shortfall must register as demand",
+  );
+});
+
+test("technology tiers persist and stay deterministic", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const { isRecipeId } = require("../world/domain/production.ts");
+  assert.equal(isRecipeId("grow_crops_improved"), true);
+
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const farm = simulation.read(70_000).economy.sites.find(
+    (site) => site.type === "farm",
+  );
+  simulation.execute(
+    { type: "dispatch_production", buildingId: farm.buildingId },
+    70_000,
+  );
+  simulation.execute(
+    { type: "set_workers", buildingId: farm.buildingId, workers: 1 },
+    70_000,
+  );
+  simulation.execute(
+    { type: "set_recipe", buildingId: farm.buildingId, recipeId: "grow_crops_improved" },
+    70_000,
+  );
+
+  // The chosen tier round-trips: it lives in the recipe id that already saved.
+  const save = JSON.parse(JSON.stringify(simulation.exportSave()));
+  const restored = LocalGameSimulation.fromSave(save);
+  const restoredSite = restored.read(140_000).economy.sites.find(
+    (site) => site.type === "farm",
+  );
+  assert.equal(restoredSite.recipeId, "grow_crops_improved");
+  assert.equal(restoredSite.tier, "improved");
+  assert.deepEqual(
+    restored.read(200_000).economy.sites,
+    simulation.read(200_000).economy.sites,
   );
 });

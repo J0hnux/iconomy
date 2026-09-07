@@ -23,6 +23,7 @@ import type {
 import {
   availableRecipes,
   defaultRecipeByProducer,
+  outputPerWorker,
   isProducerType,
   productionPriorities,
   productionRecipes,
@@ -925,7 +926,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestone 26
+              Prototype / Milestone 27
             </p>
           </div>
         </div>
@@ -2391,6 +2392,37 @@ export default function WorldMap({
               <p className="mt-2 text-xs leading-5 text-slate-300">
                 {selectedProduction.statusReason}
               </p>
+              <dl className="mt-2 grid grid-cols-3 gap-1 rounded-lg bg-black/20 px-2 py-1.5 text-center text-[10px]">
+                <div>
+                  <dt className="text-slate-500">Technology</dt>
+                  <dd
+                    className={`mt-0.5 capitalize ${selectedProduction.tier === "improved" ? "text-emerald-300" : "text-slate-200"}`}
+                  >
+                    {selectedProduction.tier}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-slate-500">Workers needed</dt>
+                  <dd className="mt-0.5 font-mono text-slate-200">
+                    {selectedProduction.requiredWorkers}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-slate-500">Per worker</dt>
+                  <dd className="mt-0.5 font-mono text-slate-200">
+                    {selectedProduction.outputPerWorkerPerCycle}
+                  </dd>
+                </div>
+              </dl>
+              {selectedProduction.upgradeRecipeId && (
+                <p className="mt-2 text-[10px] leading-4 text-sky-200">
+                  {(() => {
+                    const upgrade =
+                      productionRecipes[selectedProduction.upgradeRecipeId];
+                    return `${upgrade.name} needs ${materialSummary(upgrade.equipmentRequirements)} and ${upgrade.requiredWorkers} worker${upgrade.requiredWorkers === 1 ? "" : "s"}, producing ${outputPerWorker(upgrade.id)} per worker. Tools are held, not consumed.`;
+                  })()}
+                </p>
+              )}
               {availableRecipes(selectedProduction.type).length > 1 && (
                 <fieldset className="mt-3 border-t border-white/10 pt-3">
                   <legend className="text-[10px] uppercase tracking-[0.16em] text-slate-400">

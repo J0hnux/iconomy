@@ -53,6 +53,9 @@ export const recipeIds = [
   "cut_stone",
   "smelt_iron",
   "forge_iron_tools",
+  "grow_crops_improved",
+  "harvest_logs_improved",
+  "quarry_stone_improved",
 ] as const;
 export type RecipeId = (typeof recipeIds)[number];
 
@@ -67,16 +70,44 @@ export type ProductionRecipe = Readonly<{
   outputs: Readonly<Partial<Record<Commodity, number>>>;
   storageCapacity: number;
   destinationStorage: "site";
+  /** Technology level. Primitive tiers never require equipment to run. */
+  tier: ProductionTier;
+  /** The primitive recipe this tier industrialises, when it is an upgrade. */
+  upgradeOf?: RecipeId;
 }>;
+
+export const productionTiers = ["primitive", "improved"] as const;
+export type ProductionTier = (typeof productionTiers)[number];
 
 const recipe = (
   definition: Omit<
     ProductionRecipe,
-    "destinationStorage" | "equipmentRequirements"
+    "destinationStorage" | "equipmentRequirements" | "tier"
   >,
 ): ProductionRecipe => ({
   ...definition,
   equipmentRequirements: {},
+  tier: "primitive",
+  destinationStorage: "site",
+});
+
+/**
+ * An industrialised tier of an existing recipe.
+ *
+ * Industrialisation is configuration, not a new production system: a tier is
+ * the same producer running a recipe that needs fewer workers, yields more, and
+ * requires manufactured equipment it holds rather than consumes. A site without
+ * that equipment produces nothing, so upgrading is a genuine trade of labor for
+ * capital rather than a free bonus.
+ */
+const improvedRecipe = (
+  definition: Omit<
+    ProductionRecipe,
+    "destinationStorage" | "tier"
+  >,
+): ProductionRecipe => ({
+  ...definition,
+  tier: "improved",
   destinationStorage: "site",
 });
 
@@ -221,6 +252,42 @@ export const productionRecipes: Record<RecipeId, ProductionRecipe> = {
     outputs: { iron_tools: 1 },
     storageCapacity: 8,
   }),
+  grow_crops_improved: improvedRecipe({
+    id: "grow_crops_improved",
+    name: "Grow Crops (Iron Tools)",
+    producer: "farm",
+    consumableInputs: {},
+    equipmentRequirements: { iron_tools: 1 },
+    requiredWorkers: 1,
+    durationMs: 8_000,
+    outputs: { crops: 5 },
+    storageCapacity: 30,
+    upgradeOf: "grow_crops",
+  }),
+  harvest_logs_improved: improvedRecipe({
+    id: "harvest_logs_improved",
+    name: "Harvest Logs (Iron Tools)",
+    producer: "lumber_camp",
+    consumableInputs: {},
+    equipmentRequirements: { iron_tools: 1 },
+    requiredWorkers: 1,
+    durationMs: 10_000,
+    outputs: { wood: 4 },
+    storageCapacity: 24,
+    upgradeOf: "harvest_logs",
+  }),
+  quarry_stone_improved: improvedRecipe({
+    id: "quarry_stone_improved",
+    name: "Quarry Rough Stone (Iron Tools)",
+    producer: "quarry",
+    consumableInputs: {},
+    equipmentRequirements: { iron_tools: 2 },
+    requiredWorkers: 2,
+    durationMs: 12_000,
+    outputs: { stone: 3 },
+    storageCapacity: 18,
+    upgradeOf: "quarry_stone",
+  }),
 };
 
 export const defaultRecipeByProducer: Record<ProducerType, RecipeId> = {
@@ -297,6 +364,10 @@ export type ProductionSite = ProductionState &
     paused: boolean;
     priority: ProductionPriority;
     expectedOutputPerCycle: number;
+    tier: ProductionTier;
+    /** Output per cycle divided by the workers the recipe requires. */
+    outputPerWorkerPerCycle: number;
+    upgradeRecipeId: RecipeId | null;
     status: ProductionStatus;
     statusReason: string;
     laborEfficiency: number;
@@ -388,6 +459,23 @@ export function executeRecipeCycles(
           ? "missing_equipment"
           : "missing_inputs",
   } as const;
+}
+
+/** The improved tier that industrialises this recipe, when one is configured. */
+export function upgradeRecipeFor(recipeId: RecipeId) {
+  return Object.values(productionRecipes).find(
+    (candidate) => candidate.upgradeOf === recipeId,
+  );
+}
+
+/**
+ * Output per worker per cycle. Industrialisation is meant to change labor
+ * economics, so this is the number that must rise for a tier to be worth it —
+ * not raw output, which any additional site can also raise.
+ */
+export function outputPerWorker(recipeId: RecipeId) {
+  const candidate = productionRecipes[recipeId];
+  return recipeOutput(candidate).amount / candidate.requiredWorkers;
 }
 
 export function availableRecipes(type: ProducerType) {
@@ -627,6 +715,10 @@ export function describeProduction(
     equipmentRequirements: selected.equipmentRequirements,
     destinationStorage: selected.destinationStorage,
     expectedOutputPerCycle,
+    tier: selected.tier,
+    outputPerWorkerPerCycle:
+      Math.round((output.amount / selected.requiredWorkers) * 100) / 100,
+    upgradeRecipeId: upgradeRecipeFor(selected.id)?.id ?? null,
     status,
     statusReason,
     laborEfficiency: efficiency,

@@ -1937,9 +1937,16 @@ export class LocalGameSimulation {
       if (!state || (state.paused ?? false) || state.assignedWorkers === 0)
         continue;
       const recipe = recipeForState(state, building.type);
-      for (const [commodity, quantity] of Object.entries(
-        recipe.consumableInputs,
-      ) as [Commodity, number][]) {
+      // Equipment counts as well as inputs: an industrialised site standing
+      // idle for want of tools genuinely wants those tools, and that demand is
+      // what makes manufactured goods worth producing.
+      for (const [commodity, quantity] of [
+        ...(Object.entries(recipe.consumableInputs) as [Commodity, number][]),
+        ...(Object.entries(recipe.equipmentRequirements) as [
+          Commodity,
+          number,
+        ][]),
+      ]) {
         const missing = quantity - this.state.warehouseInventory[commodity];
         if (missing > 0) this.addMarketActivity(commodity, { demand: missing });
       }

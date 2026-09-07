@@ -367,6 +367,19 @@ For verification, open the market chart for Crops and accelerate time. The price
 
 For verification, watch the HUD across the first two migration periods. A settlement with secure food, open positions, and spare housing should gain citizens and say why. Leave the food chain unstaffed and accelerate time: food supply falls, the food signal turns to repel, citizens leave, and the collapse stops at the population floor rather than reaching zero. Build houses to raise capacity and confirm growth resumes only while beds remain free.
 
+## Milestone 27: industrialization and productivity
+
+- Technology is configuration on the existing recipe registry, not a new system. An industrialised tier is the same producer running a recipe that needs fewer workers, yields more per cycle, and requires manufactured equipment. There is no per-technology building code.
+- Three improved tiers exist: Grow Crops, Harvest Logs, and Quarry Rough Stone. Each halves or reduces its worker requirement, raises output, and requires Iron Tools. Later tiers such as mechanisation are deliberately not implemented.
+- Equipment is held, never consumed. Tools enable production and survive it, matching the distinction between consumable inputs and capacity requirements that the rest of the economy already uses.
+- A site missing its tools produces nothing at all rather than producing less, and reports exactly which equipment it lacks. Upgrading is a genuine trade of labor for capital, not a free bonus.
+- Iron Tools finally have a consumer. A site short of equipment now registers demand for it, so the iron ore, iron, and tools chain has a reason to exist.
+- Upgrading uses the verbs that already exist: dispatch the stored output, reduce the site to the new worker requirement, then select the improved recipe. Reducing the workers is what frees labor for other industries.
+- Sites report their technology tier, the workers the recipe requires, and output per worker, so a tier can be judged on labor economics rather than raw output, which any additional site could also raise.
+- The chosen tier lives in the recipe id that already persists, so no save schema change was needed.
+
+For verification, select the starting Farm and note its primitive tier at 2 output per worker. Dispatch its crops, reduce it to one worker, and switch to Grow Crops (Iron Tools): a worker is released and the site reports missing equipment. Deliver a single Iron Tools unit and compare output against an untouched Farm over the same window; one worker should outproduce two, and the tool should still be in the warehouse afterwards.
+
 ## Run and verify
 
 ```bash
