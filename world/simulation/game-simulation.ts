@@ -64,6 +64,7 @@ import {
   type FoodConsumptionResult,
 } from "../domain/population";
 import { describeLabor, validateLaborAssignment } from "../domain/labor";
+import { regionalSupplyWeightedPriceCents } from "../domain/market-intelligence";
 import {
   buildCompetitionSnapshot,
   cloneIndustryPeriodRecord,
@@ -898,6 +899,17 @@ export class LocalGameSimulation {
             demand: source.unitsConsumed,
             consumption: source.unitsConsumed,
           });
+        // Hunger is demand too. The shortfall is expressed in the staple, the
+        // food households fall back on when nothing better is available.
+        const shortfall =
+          result.consumption.requiredFoodValue -
+          result.consumption.consumedFoodValue;
+        if (shortfall > 0) {
+          const staple = populationPolicy.foodSources.at(-1)!;
+          this.addMarketActivity(staple.commodity, {
+            demand: Math.ceil(shortfall / staple.foodValue),
+          });
+        }
       }
       if (npcCityTime === boundaryTime) {
         this.state.npcCities = advanceNpcCities(this.state.npcCities);
@@ -1601,6 +1613,8 @@ export class LocalGameSimulation {
   }
 
   private recordMarket(time: number) {
+    this.recordUnfilledDemand();
+    const regionalReference = this.regionalReferencePrices();
     for (const commodity of Object.keys(marketDefinitions) as Commodity[]) {
       const history = this.state.priceHistory[commodity];
       const previous =
@@ -1612,6 +1626,7 @@ export class LocalGameSimulation {
         this.state.warehouseInventory[commodity],
         previous,
         activity,
+        regionalReference[commodity],
       );
       const priceCents = analysis.priceCents;
       this.state.priceHistory[commodity] = retainMarketPriceHistory(
@@ -1764,6 +1779,41 @@ export class LocalGameSimulation {
         : `Re-entered ${name}: ${changing.length} site${changing.length === 1 ? "" : "s"} resumed and ready for workers.`,
     );
     return this.success();
+  }
+
+  /**
+   * The regional price level for each commodity, taken from the NPC cities
+   * only. Novagrad is excluded so its own price never feeds back into itself.
+   */
+  private regionalReferencePrices() {
+    const observations = this.state.npcCities.flatMap(npcCityMarketObservations);
+    const reference = commodityRecord(0);
+    for (const commodity of commodityIds)
+      reference[commodity] = regionalSupplyWeightedPriceCents(
+        observations,
+        commodity,
+      );
+    return reference;
+  }
+
+  /**
+   * Records demand that could not be met. Consumption alone under-reports a
+   * shortage: a settlement with an empty warehouse consumes nothing and would
+   * otherwise emit no demand at all, leaving scarcity unable to move its price.
+   */
+  private recordUnfilledDemand() {
+    for (const building of this.producers) {
+      const state = this.state.productionStates.get(building.id);
+      if (!state || (state.paused ?? false) || state.assignedWorkers === 0)
+        continue;
+      const recipe = recipeForState(state, building.type);
+      for (const [commodity, quantity] of Object.entries(
+        recipe.consumableInputs,
+      ) as [Commodity, number][]) {
+        const missing = quantity - this.state.warehouseInventory[commodity];
+        if (missing > 0) this.addMarketActivity(commodity, { demand: missing });
+      }
+    }
   }
 
   private novagradRegionalFlow() {

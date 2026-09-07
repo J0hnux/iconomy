@@ -61,6 +61,12 @@ export const marketPricingPolicy = {
   maximumChangePerObservation: 0.12,
   minimumBasePriceMultiplier: 0.4,
   maximumBasePriceMultiplier: 2,
+  /**
+   * How strongly a local price is pulled toward the wider regional level.
+   * Bounded well below 1 so geography still creates price differences worth
+   * trading on, rather than collapsing every market to one number.
+   */
+  regionalAnchorWeight: 0.35,
 } as const;
 
 export type MarketSupplyStatus =
@@ -252,11 +258,21 @@ export type MarketSnapshot = Readonly<{
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.max(minimum, Math.min(maximum, value));
 
+/**
+ * Resolves the next price from local scarcity, local flow, and — when supplied
+ * — the regional price level.
+ *
+ * The regional reference is optional: omit it and the result is exactly the
+ * local-only price this function has always produced. Passing it lets a glut or
+ * shortage elsewhere in the region reach this market, which is what makes
+ * importing, exporting and arbitrage worth doing.
+ */
 export function marketPriceAnalysis(
   commodity: Commodity,
   available: number,
   previousPriceCents: number,
   activity: MarketActivity,
+  regionalReferencePriceCents?: number,
 ) {
   const definition = marketDefinitions[commodity];
   const inventoryPressure = clamp(
@@ -269,11 +285,18 @@ export function marketPriceAnalysis(
     -1,
     1,
   );
-  const rawTarget =
+  const localTarget =
     definition.basePriceCents *
     (1 +
       inventoryPressure * marketPricingPolicy.inventoryPressureWeight +
       flowPressure * marketPricingPolicy.flowPressureWeight);
+  const anchored =
+    regionalReferencePriceCents !== undefined &&
+    regionalReferencePriceCents > 0;
+  const rawTarget = anchored
+    ? localTarget * (1 - marketPricingPolicy.regionalAnchorWeight) +
+      regionalReferencePriceCents * marketPricingPolicy.regionalAnchorWeight
+    : localTarget;
   const targetPriceCents = clamp(
     Math.round(rawTarget),
     Math.round(
@@ -316,6 +339,20 @@ export function marketPriceAnalysis(
     );
   if (activity.consumption > 0)
     reasons.push(`Recent consumption used ${activity.consumption} units.`);
+  const unfilled = Math.max(0, activity.demand - activity.consumption);
+  if (unfilled > 0)
+    reasons.push(`${unfilled} units of demand went unfilled.`);
+  if (anchored) {
+    const regionalLabel = `$${(regionalReferencePriceCents! / 100).toFixed(2)}`;
+    const localLabel = `$${(Math.round(localTarget) / 100).toFixed(2)}`;
+    reasons.push(
+      regionalReferencePriceCents! > localTarget
+        ? `The wider region prices this at ${regionalLabel}, above the local ${localLabel}, pulling the target up.`
+        : regionalReferencePriceCents! < localTarget
+          ? `The wider region prices this at ${regionalLabel}, below the local ${localLabel}, pulling the target down.`
+          : `The wider region prices this at ${regionalLabel}, matching the local target.`,
+    );
+  }
   if (reasons.length === 0)
     reasons.push("Inventory is at target and recent supply matched demand.");
   const previousLabel = `$${(previous / 100).toFixed(2)}`;

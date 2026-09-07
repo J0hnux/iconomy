@@ -240,6 +240,37 @@ export function regionalMedianPriceCents(
     : Math.round((prices[middle - 1] + prices[middle]) / 2);
 }
 
+/**
+ * The regional price level, weighted by where the goods actually are.
+ *
+ * A plain median answers "what do most places charge", which is the wrong
+ * question for a trader: a region holding a glut in one city and nothing
+ * anywhere else is a cheap region, not an expensive one, because the glut is
+ * the only place anyone could actually buy. Weighting by inventory makes the
+ * reference follow available supply. With no inventory anywhere there is
+ * nothing to buy, so the median stands in.
+ */
+export function regionalSupplyWeightedPriceCents(
+  observations: readonly RegionalMarketObservation[],
+  commodity: Commodity,
+) {
+  const relevant = observations.filter(
+    (observation) => observation.commodity === commodity,
+  );
+  const stocked = relevant.filter((observation) => observation.inventory > 0);
+  if (stocked.length === 0) return regionalMedianPriceCents(observations, commodity);
+  const totalUnits = stocked.reduce(
+    (total, observation) => total + observation.inventory,
+    0,
+  );
+  const totalValue = stocked.reduce(
+    (total, observation) =>
+      total + observation.priceCents * observation.inventory,
+    0,
+  );
+  return Math.round(totalValue / totalUnits);
+}
+
 export function inventoryCoveragePeriods(
   observation: Pick<RegionalMarketObservation, "inventory" | "recentConsumption">,
 ) {

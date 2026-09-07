@@ -925,7 +925,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestone 25
+              Prototype / Milestone 25.5
             </p>
           </div>
         </div>

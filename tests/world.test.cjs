@@ -4504,3 +4504,228 @@ test("a poisoned history heals as the simulation keeps recording", () => {
   const newest = [...crops.history].sort((a, b) => a.time - b.time).at(-1);
   assert.equal(crops.priceCents, newest.priceCents);
 });
+
+test("the regional price level follows available supply, not the majority", () => {
+  const {
+    regionalSupplyWeightedPriceCents,
+    regionalMedianPriceCents,
+  } = require("../world/domain/market-intelligence.ts");
+  const at = (locationId, inventory, priceCents) => ({
+    locationId,
+    locationName: locationId,
+    kind: "npc_city",
+    commodity: "crops",
+    inventory,
+    targetStock: 20,
+    priceCents,
+    recentProduction: 0,
+    recentSupply: 0,
+    recentConsumption: 0,
+    recentDemand: 0,
+    imports: 0,
+    exports: 0,
+  });
+  // One city drowning in crops, four with none: the region is cheap, because
+  // the glut is the only place anyone could actually buy.
+  const observations = [
+    at("greenvale", 2721, 181),
+    at("northwood", 0, 742),
+    at("stonebridge", 0, 742),
+    at("ironhold", 0, 742),
+    at("port-azure", 0, 742),
+  ];
+  assert.equal(regionalMedianPriceCents(observations, "crops"), 742);
+  assert.equal(regionalSupplyWeightedPriceCents(observations, "crops"), 181);
+
+  // Two stocked cities blend by how much each holds.
+  assert.equal(
+    regionalSupplyWeightedPriceCents(
+      [at("a", 300, 100), at("b", 100, 500)],
+      "crops",
+    ),
+    200,
+  );
+  // With nothing stocked anywhere there is nothing to buy, so the median stands in.
+  assert.equal(
+    regionalSupplyWeightedPriceCents([at("a", 0, 400), at("b", 0, 600)], "crops"),
+    500,
+  );
+  assert.equal(regionalSupplyWeightedPriceCents([], "crops"), 0);
+});
+
+test("a regional price level pulls the local target without erasing local scarcity", () => {
+  const {
+    marketPriceAnalysis,
+    marketPricingPolicy,
+  } = require("../world/domain/market.ts");
+  const idle = { supply: 0, demand: 0, consumption: 0 };
+
+  // Omitting the reference reproduces the local-only price exactly.
+  const local = marketPriceAnalysis("crops", 0, 742, idle);
+  assert.deepEqual(marketPriceAnalysis("crops", 0, 742, idle, undefined), local);
+  assert.deepEqual(marketPriceAnalysis("crops", 0, 742, idle, 0), local);
+
+  // A cheap region drags the target down; an expensive one lifts it.
+  const cheap = marketPriceAnalysis("crops", 0, 742, idle, 181);
+  const dear = marketPriceAnalysis("crops", 0, 742, idle, 1_400);
+  assert.ok(cheap.targetPriceCents < local.targetPriceCents);
+  assert.ok(dear.targetPriceCents > local.targetPriceCents);
+
+  // The pull is bounded: local scarcity still matters, so the target never
+  // collapses onto the regional number.
+  assert.ok(
+    cheap.targetPriceCents > 181,
+    "a cheap region must not erase local scarcity",
+  );
+  assert.ok(marketPricingPolicy.regionalAnchorWeight > 0);
+  assert.ok(marketPricingPolicy.regionalAnchorWeight < 1);
+  // The blend is exactly the configured weight.
+  const localTarget = local.targetPriceCents;
+  const weight = marketPricingPolicy.regionalAnchorWeight;
+  assert.equal(
+    cheap.targetPriceCents,
+    Math.round(localTarget * (1 - weight) + 181 * weight),
+  );
+
+  // The reason explains which way the region pulled and to what.
+  assert.ok(
+    cheap.reasons.some((reason) =>
+      /wider region prices this at \$1\.81, below the local/.test(reason),
+    ),
+  );
+  assert.ok(
+    dear.reasons.some((reason) =>
+      /wider region prices this at \$14\.00, above the local/.test(reason),
+    ),
+  );
+  assert.equal(
+    local.reasons.filter((reason) => /wider region/.test(reason)).length,
+    0,
+  );
+});
+
+test("unfilled demand raises price where an empty market used to go silent", () => {
+  const { marketPriceAnalysis } = require("../world/domain/market.ts");
+  const silent = marketPriceAnalysis("crops", 0, 500, {
+    supply: 0,
+    demand: 0,
+    consumption: 0,
+  });
+  // Demand that could not be met is still demand.
+  const hungry = marketPriceAnalysis("crops", 0, 500, {
+    supply: 0,
+    demand: 10,
+    consumption: 0,
+  });
+  assert.ok(hungry.targetPriceCents > silent.targetPriceCents);
+  // A single observation can be capped by the per-step change limit, so the
+  // divergence shows once the price is allowed to converge on its target.
+  const settle = (activity) => {
+    let price = 500;
+    for (let step = 0; step < 20; step++)
+      price = marketPriceAnalysis("crops", 0, price, activity).priceCents;
+    return price;
+  };
+  assert.ok(
+    settle({ supply: 0, demand: 10, consumption: 0 }) >
+      settle({ supply: 0, demand: 0, consumption: 0 }),
+  );
+  assert.ok(
+    hungry.reasons.some((reason) => /10 units of demand went unfilled/.test(reason)),
+  );
+  assert.equal(
+    silent.reasons.filter((reason) => /went unfilled/.test(reason)).length,
+    0,
+  );
+  // Demand that was fully met is not reported as unfilled.
+  const fed = marketPriceAnalysis("crops", 4, 500, {
+    supply: 0,
+    demand: 6,
+    consumption: 6,
+  });
+  assert.equal(
+    fed.reasons.filter((reason) => /went unfilled/.test(reason)).length,
+    0,
+  );
+});
+
+test("a starving settlement moves its own price instead of freezing", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const economy = simulation.read(1_200_000).economy;
+  const crops = economy.market.listings.find(
+    (listing) => listing.commodity === "crops",
+  );
+
+  // Hunger is recorded as demand even though nothing could be consumed.
+  const hungryPoints = crops.history.filter(
+    (point) => (point.recentDemand ?? 0) > 0 && (point.recentConsumption ?? 0) === 0,
+  );
+  assert.ok(
+    hungryPoints.length > 0,
+    "an empty warehouse must still register demand",
+  );
+  assert.equal(economy.logistics.warehouseInventory.crops, 0);
+
+  // That demand keeps the price alive rather than pinned at one value.
+  const prices = crops.history.map((point) => point.priceCents);
+  assert.ok(
+    new Set(prices).size > 5,
+    `expected a moving price, saw ${new Set(prices).size} distinct values`,
+  );
+  assert.ok(Math.max(...prices) > Math.min(...prices));
+
+  // The regional level reaches the local market.
+  assert.ok(
+    crops.priceReasons.some((reason) => /wider region/.test(reason)),
+    "local pricing must cite the regional level",
+  );
+});
+
+test("connected pricing stays deterministic and step independent", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const direct = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const stepped = new LocalGameSimulation(createStartingWorld(), 1_000);
+  for (let time = 50_000; time <= 1_200_000; time += 50_000) stepped.read(time);
+  const pricesOf = (simulation) =>
+    simulation
+      .read(1_200_000)
+      .economy.market.listings.map((listing) => [
+        listing.commodity,
+        listing.priceCents,
+      ]);
+  assert.deepEqual(pricesOf(stepped), pricesOf(direct));
+
+  const repeat = new LocalGameSimulation(createStartingWorld(), 1_000);
+  assert.deepEqual(pricesOf(repeat), pricesOf(direct));
+
+  // Prices stay inside their configured band over a long run.
+  const { marketDefinitions, marketPricingPolicy } = require(
+    "../world/domain/market.ts",
+  );
+  for (const [commodity, priceCents] of pricesOf(direct)) {
+    const definition = marketDefinitions[commodity];
+    assert.ok(
+      priceCents >=
+        Math.round(
+          definition.basePriceCents *
+            marketPricingPolicy.minimumBasePriceMultiplier,
+        ),
+      `${commodity} fell below its floor`,
+    );
+    assert.ok(
+      priceCents <=
+        Math.round(
+          definition.basePriceCents *
+            marketPricingPolicy.maximumBasePriceMultiplier,
+        ),
+      `${commodity} rose above its ceiling`,
+    );
+  }
+});

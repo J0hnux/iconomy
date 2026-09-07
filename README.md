@@ -313,7 +313,7 @@ For verification, open **Regions**, sort regional Food quotes visually, and crea
 
 ### Browser save storage
 
-Autosaves use a compact version-1 storage envelope. Market observations are stored as numeric tuples and repeated price-explanation strings use a shared dictionary, while loading reconstructs the unchanged simulation save shape. Existing plain JSON version-1 saves still load and migrate to the compact format on their next autosave. If browser storage is unavailable or genuinely full, the simulation continues in memory and the HUD reports that newer progress is not being saved instead of throwing from the game loop.
+Autosaves are stored in IndexedDB as a structured clone of the unchanged version-1 save, which avoids both a JSON round trip and the roughly 5 MB per-origin limit that local storage imposes. An existing local storage save migrates on first load and its key is cleared. Browsers that refuse IndexedDB fall back to local storage using a compact version-1 storage envelope. Market observations are stored as numeric tuples and repeated price-explanation strings use a shared dictionary, while loading reconstructs the unchanged simulation save shape. Existing plain JSON version-1 saves still load and migrate to the compact format on their next autosave. If browser storage is unavailable or genuinely full, the simulation continues in memory and the HUD reports that newer progress is not being saved instead of throwing from the game loop. Periodic autosaves are throttled to one every ten seconds while player commands still save immediately, so an idle simulation does not rewrite a multi-megabyte save every second.
 
 ## Milestone 23: NPC companies and competition
 
@@ -325,6 +325,33 @@ Autosaves use a compact version-1 storage envelope. Market observations are stor
 - The Company view exposes every competitor's role, home city, wallet, labor, capacity, trade profit/loss, latest decision, and economic reasons. Decision history is bounded and preserved with company state in compatible version-1 saves.
 
 For verification, open **Company** and accelerate to the next 60-second NPC period. Greenvale Pantry should report its labor, input purchases, output, and sales; Azure Mercantile should name its selected route and expected post-transport margin; Ironhold Works should explain expansion or why it deferred. Continue until the trader's shipment arrives and compare estimated with realized profit. Reload the save and confirm wallets, cargo, facilities, and decision histories remain unchanged.
+
+## Milestone 24: economic opportunity detection and market intelligence
+
+- Every location and commodity pair in the region is classified as Severe Shortage, Shortage, Balanced, Oversupplied, or Severe Oversupply, covering Novagrad and all NPC cities.
+- Classification reads only authoritative state: local listings and price history for Novagrad, and inventory, prices, recent production, recent consumption, imports, and exports for NPC cities. The detector owns nothing and changes nothing.
+- Conditions come from additive signals over stock against target, inventory coverage in days, price deviation from the regional level, production against consumption, unfilled demand, and import dependence. Every reason shown corresponds to a signal that actually fired.
+- Possible responses are informational only and name achievable actions: Produce appears when a recipe can make the commodity, Import when another location genuinely holds a surplus. Nothing is executed automatically and no profit is promised.
+- Thresholds live in the market intelligence policy rather than in UI code. The report is derived on every read, never persisted, and is deterministic across identical simulations, differing step sizes, and save loading.
+
+## Milestone 25: competitive economic response
+
+- The Market view reports the player's position in every industry: market size, current supply and demand, price against the regional level, player market share, NPC supply growth, recent entrants, and the cost of entry.
+- Unit margin is shown as price minus input cost and labelled as such, never as profit.
+- Positions derive from recorded periods of authoritative production facts, captured at the existing NPC city cadence and preserved in saves. Saves written before this milestone load and resume recording.
+- A new reversible verb exits or re-enters an entire industry, pausing every player site producing that commodity and releasing its workers for other work. Expand, reduce, and export route to the existing build, worker, and regional trade verbs.
+- Opportunities do not stay still. Supplying a shortage lowers the price the player sells into and can flip an industry to oversupply, while NPC capacity growth and new entrants remain visible as they happen.
+
+## Milestone 25.5: connected price discovery
+
+- Local prices now respond to the wider region. A glut or shortage in NPC cities reaches Novagrad instead of stopping at the city limit, so importing, exporting, and arbitrage are worth doing.
+- The regional level is weighted by where goods actually are rather than by how many places quote a price. One city holding a glut while the rest hold nothing makes the region cheap, because the glut is the only place anyone could buy.
+- The pull is bounded by a configured weight, so geography still creates price differences worth trading on and local scarcity is never erased.
+- Demand that cannot be met now counts as demand. A settlement with an empty warehouse consumes nothing, and previously emitted no signal at all; hunger and blocked production inputs now push prices up. The household shortfall is expressed in the staple food, the fallback when nothing better is available.
+- Price explanations name the new causes, reporting which way the region pulled and how many units of demand went unfilled.
+- Novagrad's own price is excluded from its regional reference, so a market never feeds back into itself. Pricing remains deterministic, step independent, and inside its configured floor and ceiling.
+
+For verification, open the market chart for Crops and accelerate time. The price should step up on each household consumption cycle as unmet demand registers, then decay back, rather than holding a single value. Compare Novagrad's Crops price with Greenvale's in the Regions view: as Greenvale accumulates a surplus its price falls and Novagrad's follows part of the way down, never all the way.
 
 ## Run and verify
 
