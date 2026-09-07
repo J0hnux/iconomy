@@ -90,11 +90,39 @@ export function priceScale(
   };
 }
 
-function chartX(index: number, count: number, dimensions: ChartDimensions) {
+/**
+ * Positions a bucket by its time rather than its index. Index spacing hid gaps:
+ * buckets with no observation were drawn as though they were adjacent, so a
+ * chart could silently span far more time than its timeframe implies.
+ */
+export function timeScale(
+  windowStart: number,
+  windowEnd: number,
+  dimensions: ChartDimensions,
+) {
   const plotWidth = dimensions.width - dimensions.left - dimensions.right;
-  return count === 1
-    ? dimensions.left + plotWidth / 2
-    : dimensions.left + (index / (count - 1)) * plotWidth;
+  const span = Math.max(1, windowEnd - windowStart);
+  return {
+    windowStart,
+    windowEnd,
+    plotWidth,
+    x: (time: number) =>
+      dimensions.left +
+      ((Math.min(Math.max(time, windowStart), windowEnd) - windowStart) / span) *
+        plotWidth,
+  };
+}
+
+/** The visible window for a timeframe, anchored on the newest bucket. */
+export function chartWindow(
+  latestEndTime: number,
+  bucketMs: number,
+  visibleBuckets: number,
+) {
+  return {
+    windowStart: latestEndTime - bucketMs * visibleBuckets,
+    windowEnd: latestEndTime,
+  };
 }
 
 function ChartAxes({
@@ -177,12 +205,14 @@ function linePointLabel(point: PriceChartPoint) {
 function LinePriceChart({
   points,
   dimensions,
+  window,
   activeStart,
   onHover,
   onSelect,
 }: {
   points: readonly PriceChartPoint[];
   dimensions: ChartDimensions;
+  window: { windowStart: number; windowEnd: number };
   activeStart: number;
   onHover: (startTime: number | null) => void;
   onSelect: (startTime: number) => void;
@@ -191,9 +221,14 @@ function LinePriceChart({
     points.map((point) => point.priceCents),
     dimensions,
   );
-  const coordinates = points.map((point, index) => ({
+  const horizontal = timeScale(
+    window.windowStart,
+    window.windowEnd,
+    dimensions,
+  );
+  const coordinates = points.map((point) => ({
     point,
-    x: chartX(index, points.length, dimensions),
+    x: horizontal.x(point.startTime),
     y: scale.y(point.priceCents),
   }));
   return (
@@ -208,8 +243,8 @@ function LinePriceChart({
         dimensions={dimensions}
         minimum={scale.minimum}
         maximum={scale.maximum}
-        firstTime={points[0].startTime}
-        lastTime={points.at(-1)!.endTime}
+        firstTime={window.windowStart}
+        lastTime={window.windowEnd}
       />
       <polyline
         points={coordinates.map(({ x, y }) => `${x},${y}`).join(" ")}
@@ -252,12 +287,14 @@ function candleLabel(candle: PriceCandle) {
 function CandlestickPriceChart({
   candles,
   dimensions,
+  window,
   activeStart,
   onHover,
   onSelect,
 }: {
   candles: readonly PriceCandle[];
   dimensions: ChartDimensions;
+  window: { windowStart: number; windowEnd: number; bucketMs: number };
   activeStart: number;
   onHover: (startTime: number | null) => void;
   onSelect: (startTime: number) => void;
@@ -266,9 +303,16 @@ function CandlestickPriceChart({
     candles.flatMap((candle) => [candle.lowCents, candle.highCents]),
     dimensions,
   );
-  const plotWidth = dimensions.width - dimensions.left - dimensions.right;
-  const slotWidth = plotWidth / Math.max(1, candles.length);
-  const bodyWidth = Math.max(4, Math.min(20, slotWidth * 0.55));
+  const horizontal = timeScale(
+    window.windowStart,
+    window.windowEnd,
+    dimensions,
+  );
+  // Body width follows the bucket duration, so gaps stay visible as gaps.
+  const slotWidth =
+    (horizontal.plotWidth * window.bucketMs) /
+    Math.max(1, window.windowEnd - window.windowStart);
+  const bodyWidth = Math.max(2, Math.min(20, slotWidth * 0.6));
   return (
     <svg
       viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
@@ -281,11 +325,11 @@ function CandlestickPriceChart({
         dimensions={dimensions}
         minimum={scale.minimum}
         maximum={scale.maximum}
-        firstTime={candles[0].startTime}
-        lastTime={candles.at(-1)!.endTime}
+        firstTime={window.windowStart}
+        lastTime={window.windowEnd}
       />
-      {candles.map((candle, index) => {
-        const x = dimensions.left + slotWidth * (index + 0.5);
+      {candles.map((candle) => {
+        const x = horizontal.x(candle.startTime + window.bucketMs / 2);
         const openY = scale.y(candle.openCents);
         const closeY = scale.y(candle.closeCents);
         const rising = candle.closeCents > candle.openCents;
@@ -419,9 +463,21 @@ export function MarketPriceChart({
         No price observations yet.
       </p>
     );
-  const visibleLimit = expanded ? 180 : floating ? 96 : 48;
-  const candles = chart.candles.slice(-visibleLimit);
-  const linePoints = chart.linePoints.slice(-visibleLimit);
+  // The window is the timeframe's own, so "1m" means the last hour on every
+  // panel size rather than "as many minutes as happen to be retained".
+  const latestEndTime = chart.candles.at(-1)!.endTime;
+  const window = {
+    ...chartWindow(
+      latestEndTime,
+      timeframe.durationMs,
+      timeframe.visibleBuckets,
+    ),
+    bucketMs: timeframe.durationMs,
+  };
+  const inWindow = <T extends { startTime: number }>(periods: readonly T[]) =>
+    periods.filter((period) => period.startTime >= window.windowStart);
+  const candles = inWindow(chart.candles);
+  const linePoints = inWindow(chart.linePoints);
   const periods = chartType === "line" ? linePoints : candles;
   const activePeriod =
     periods.find((period) => period.startTime === hoveredStart) ??
@@ -444,6 +500,7 @@ export function MarketPriceChart({
           <LinePriceChart
             points={linePoints}
             dimensions={dimensions}
+            window={window}
             activeStart={activePeriod.startTime}
             onHover={setHoveredStart}
             onSelect={onSelectedPeriodStartChange}
@@ -452,6 +509,7 @@ export function MarketPriceChart({
           <CandlestickPriceChart
             candles={candles}
             dimensions={dimensions}
+            window={window}
             activeStart={activePeriod.startTime}
             onHover={setHoveredStart}
             onSelect={onSelectedPeriodStartChange}

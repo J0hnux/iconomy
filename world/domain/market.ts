@@ -78,14 +78,19 @@ export type PricePoint = Readonly<{
   recentConsumption?: number;
   priceReasons?: readonly string[];
 }>;
+/**
+ * Each timeframe carries the bucket size and how many buckets a chart shows.
+ * The window keeps a timeframe meaning what its label implies: "1m" shows
+ * roughly the last hour rather than every retained minute.
+ */
 export const marketChartTimeframes = [
-  { id: "1s", label: "1s", durationMs: 1_000 },
-  { id: "1m", label: "1m", durationMs: 60_000 },
-  { id: "5m", label: "5m", durationMs: 5 * 60_000 },
-  { id: "15m", label: "15m", durationMs: 15 * 60_000 },
-  { id: "1h", label: "1H", durationMs: 60 * 60_000 },
-  { id: "4h", label: "4H", durationMs: 4 * 60 * 60_000 },
-  { id: "1d", label: "1D", durationMs: 24 * 60 * 60_000 },
+  { id: "1s", label: "1s", durationMs: 1_000, visibleBuckets: 120 },
+  { id: "1m", label: "1m", durationMs: 60_000, visibleBuckets: 60 },
+  { id: "5m", label: "5m", durationMs: 5 * 60_000, visibleBuckets: 48 },
+  { id: "15m", label: "15m", durationMs: 15 * 60_000, visibleBuckets: 32 },
+  { id: "1h", label: "1H", durationMs: 60 * 60_000, visibleBuckets: 24 },
+  { id: "4h", label: "4H", durationMs: 4 * 60 * 60_000, visibleBuckets: 18 },
+  { id: "1d", label: "1D", durationMs: 24 * 60 * 60_000, visibleBuckets: 14 },
 ] as const;
 export type MarketChartTimeframeId =
   (typeof marketChartTimeframes)[number]["id"];

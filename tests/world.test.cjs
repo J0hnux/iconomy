@@ -4268,3 +4268,113 @@ test("storage falls back to localStorage and reports failure when nothing accept
     assert.equal((await repository.loadLocalSave()).save, null);
   });
 });
+
+test("each timeframe carries a visible window that matches its label", () => {
+  const { marketChartTimeframes } = require("../world/domain/market.ts");
+  for (const timeframe of marketChartTimeframes) {
+    assert.ok(
+      Number.isSafeInteger(timeframe.visibleBuckets) &&
+        timeframe.visibleBuckets > 1,
+      `${timeframe.label} needs a visible window`,
+    );
+  }
+  const byId = Object.fromEntries(
+    marketChartTimeframes.map((timeframe) => [timeframe.id, timeframe]),
+  );
+  // "1m" shows the last hour, not every retained minute.
+  assert.equal(byId["1m"].durationMs * byId["1m"].visibleBuckets, 60 * 60_000);
+  // Longer timeframes cover proportionally longer spans.
+  const spans = marketChartTimeframes.map(
+    (timeframe) => timeframe.durationMs * timeframe.visibleBuckets,
+  );
+  for (let index = 1; index < spans.length; index++)
+    assert.ok(
+      spans[index] > spans[index - 1],
+      `${marketChartTimeframes[index].label} should span longer than ${marketChartTimeframes[index - 1].label}`,
+    );
+});
+
+test("chart buckets are positioned by time so gaps stay visible", () => {
+  const {
+    chartWindow,
+    timeScale,
+  } = require("../presentation/world/price-chart.tsx");
+  const dimensions = {
+    width: 620,
+    height: 250,
+    top: 14,
+    bottom: 30,
+    left: 16,
+    right: 16,
+  };
+  const plotWidth = dimensions.width - dimensions.left - dimensions.right;
+
+  const window = chartWindow(600_000, 60_000, 10);
+  assert.deepEqual(window, { windowStart: 0, windowEnd: 600_000 });
+
+  const scale = timeScale(window.windowStart, window.windowEnd, dimensions);
+  assert.equal(scale.plotWidth, plotWidth);
+  assert.equal(scale.x(0), dimensions.left);
+  assert.equal(scale.x(600_000), dimensions.left + plotWidth);
+  assert.equal(scale.x(300_000), dimensions.left + plotWidth / 2);
+
+  // A gap occupies real width: two buckets an hour apart are not adjacent.
+  const early = scale.x(60_000);
+  const late = scale.x(540_000);
+  assert.ok(late - early > plotWidth * 0.7);
+
+  // Times outside the window clamp to its edges rather than escaping the plot.
+  assert.equal(scale.x(-1_000_000), dimensions.left);
+  assert.equal(scale.x(9_999_999), dimensions.left + plotWidth);
+
+  // A degenerate window still produces a usable scale.
+  const flat = timeScale(1_000, 1_000, dimensions);
+  assert.ok(Number.isFinite(flat.x(1_000)));
+});
+
+test("the visible window keeps recent movement legible on a long flat history", () => {
+  const {
+    buildPriceChartReadModel,
+    marketChartTimeframes,
+  } = require("../world/domain/market.ts");
+  const { chartWindow } = require("../presentation/world/price-chart.tsx");
+  const oneMinute = marketChartTimeframes.find(
+    (timeframe) => timeframe.id === "1m",
+  );
+
+  // Four hours of flat price, then a late crash: the shape that used to render
+  // as a dead line with the movement crushed into the final few pixels.
+  const history = [];
+  for (let time = 0; time < 4 * 60 * 60_000; time += 5_000)
+    history.push({ time, priceCents: 742 });
+  for (const price of [653, 575, 506, 445]) {
+    history.push({ time: history.at(-1).time + 5_000, priceCents: price });
+  }
+  const latest = history.at(-1).time;
+  const chart = buildPriceChartReadModel(history, oneMinute.durationMs, latest);
+  const window = chartWindow(
+    chart.candles.at(-1).endTime,
+    oneMinute.durationMs,
+    oneMinute.visibleBuckets,
+  );
+  const visible = chart.candles.filter(
+    (candle) => candle.startTime >= window.windowStart,
+  );
+
+  assert.ok(
+    chart.candles.length > 200,
+    "the full history is long enough to bury the movement",
+  );
+  assert.equal(visible.length, oneMinute.visibleBuckets);
+  const moving = visible.filter(
+    (candle) => candle.highCents !== candle.lowCents,
+  ).length;
+  // The moving candle is now a meaningful share of the visible chart.
+  assert.ok(moving >= 1);
+  assert.ok(
+    moving / visible.length > chart.candles.filter((c) => c.highCents !== c.lowCents).length / chart.candles.length,
+    "windowing raises the proportion of the chart that shows movement",
+  );
+  // The visible price scale reflects the crash rather than the old plateau.
+  assert.equal(Math.min(...visible.map((candle) => candle.lowCents)), 445);
+});
