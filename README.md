@@ -229,6 +229,18 @@ For the playable gate, build two Farms and distribute the finite workforce uneve
 
 For chart verification, open Market, select Crops, choose Candlestick and 1s, then watch scheduled ticks or a sale create genuine buckets. Try every timeframe and compare Line closes with candle closes. Expand the chart, change to 1H, close it with Escape, and confirm the compact chart still shows Crops, Candlestick, and 1H while the simulation continues advancing.
 
+## Milestone 16.7: floating commodity market terminal
+
+- A global Market action opens a non-blocking terminal over the world. It does not require a building selection, pause simulation time, dim the map, or replace the existing right-panel Exchange.
+- The terminal can be dragged by its title bar and is clamped to the visible viewport. Its commodity list and chart area scroll internally, so browsing markets does not move the right gameplay panel.
+- All current market listings come from the existing commodity catalog and market snapshot. Search filters display names immediately and case-insensitively; compact rows show the current quote and trend without mounting a chart for every commodity.
+- All mode provides a flat list. Production Chains groups the same commodities by connected components and order derived from the authoritative recipe inputs and outputs. The selected commodity also exposes direct Made from and Used to make links from those recipes.
+- The floating chart reuses the existing price history, OHLC read model, SVG renderer, active-candle behavior, Line/Candlestick mode, and 1s through 1D controls. Only the selected commodity renders a full live chart.
+- Commodity, timeframe, chart type, and selected period are shared with the existing expanded chart flow. Expand opens the same detailed modal with the terminal's current view; closing it returns focus to the terminal while the terminal remains open.
+- Market-terminal state is presentation-only and session-only. It sends no economic commands, changes no pricing or OHLC rules, adds no commodities, and creates no parallel simulation or history subscription.
+
+For the terminal check, use the bottom Market action, search for Crops, switch to Candlestick and 1s, and leave the window open while simulation time advances. Search for Iron, choose Iron Ore or Iron Tools, browse Production Chains, follow a related-good link, then Expand. Close the analysis modal and confirm the terminal remains on the same commodity, timeframe, and chart type. Drag the terminal toward each edge and confirm it remains reachable.
+
 ## Run and verify
 
 ```bash

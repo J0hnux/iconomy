@@ -247,6 +247,7 @@ export function BottomHud({
   scene,
   onBuild,
   onMarket,
+  onMarketTerminal,
   onCompany,
   onWarehouse,
   onHome,
@@ -260,6 +261,7 @@ export function BottomHud({
   };
   onBuild: () => void;
   onMarket: () => void;
+  onMarketTerminal: () => void;
   onCompany: () => void;
   onWarehouse: () => void;
   onHome: () => void;
@@ -370,6 +372,7 @@ export function BottomHud({
           {[
             ["Build", onBuild],
             ["Trade", onMarket],
+            ["Market", onMarketTerminal],
             ["Company", onCompany],
             ["Warehouse", onWarehouse],
             ["Home", onHome],

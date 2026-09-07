@@ -67,6 +67,7 @@ import {
   MarketPriceChart,
   type MarketChartType,
 } from "./price-chart";
+import { FloatingMarket } from "./floating-market";
 
 const button =
   "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-amber-200 disabled:opacity-30";
@@ -157,6 +158,7 @@ export default function WorldMap({
     number | null
   >(null);
   const [marketChartExpanded, setMarketChartExpanded] = useState(false);
+  const [marketTerminalOpen, setMarketTerminalOpen] = useState(false);
   const marketChartCloseRef = useRef<HTMLButtonElement>(null);
   const marketChartReturnFocusRef = useRef<HTMLElement | null>(null);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -2102,6 +2104,7 @@ export default function WorldMap({
           setCompanyOpen(false);
           sidebarRef.current?.scrollTo({ top: 0 });
         }}
+        onMarketTerminal={() => setMarketTerminalOpen(true)}
         onCompany={() => {
           setCompanyOpen(true);
           setMarketOpen(false);
@@ -2123,6 +2126,25 @@ export default function WorldMap({
             }));
         }}
       />
+      {marketTerminalOpen && production && (
+        <FloatingMarket
+          market={production.market}
+          simulationTime={production.simulationTime}
+          selectedCommodity={selectedMarketCommodity}
+          onSelectedCommodityChange={setSelectedMarketCommodity}
+          chartType={marketChartType}
+          onChartTypeChange={setMarketChartType}
+          timeframeId={marketChartTimeframe}
+          onTimeframeChange={setMarketChartTimeframe}
+          selectedPeriodStart={selectedMarketPeriodStart}
+          onSelectedPeriodStartChange={setSelectedMarketPeriodStart}
+          onExpand={(trigger) => {
+            marketChartReturnFocusRef.current = trigger;
+            setMarketChartExpanded(true);
+          }}
+          onClose={() => setMarketTerminalOpen(false)}
+        />
+      )}
       {marketChartExpanded && selectedMarketListing && production && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"

@@ -2019,3 +2019,46 @@ test("market sales remove warehouse goods, credit cash, and create events", () =
   assert.equal(staleQuote.status, 409);
   assert.ok(staleQuote.readModel);
 });
+
+test("commodity browser search derives case-insensitive results from the catalog", () => {
+  const {
+    filterCommodityCatalog,
+  } = require("../world/domain/commodity-navigation.ts");
+  const { commodityIds } = require("../world/domain/commodities.ts");
+  assert.deepEqual(filterCommodityCatalog(commodityIds, "cro"), ["crops"]);
+  assert.deepEqual(filterCommodityCatalog(commodityIds, "IRON"), [
+    "iron_ore",
+    "iron",
+    "iron_tools",
+  ]);
+  assert.deepEqual(filterCommodityCatalog(commodityIds, "  "), commodityIds);
+  assert.deepEqual(filterCommodityCatalog(commodityIds, "unobtainium"), []);
+});
+
+test("commodity browser chains and related goods come from production recipes", () => {
+  const {
+    buildCommodityProductionChains,
+    commodityRelationships,
+  } = require("../world/domain/commodity-navigation.ts");
+  const { commodityIds } = require("../world/domain/commodities.ts");
+  const chains = buildCommodityProductionChains(commodityIds);
+  const listed = chains.flatMap((chain) => chain.commodities);
+  assert.deepEqual([...listed].sort(), [...commodityIds].sort());
+  assert.equal(new Set(listed).size, commodityIds.length);
+
+  const forestry = chains.find((chain) => chain.commodities.includes("wood"));
+  assert.deepEqual(forestry.commodities, ["wood", "lumber"]);
+  const metals = chains.find((chain) =>
+    chain.commodities.includes("iron_ore"),
+  );
+  assert.deepEqual(metals.commodities, ["iron_ore", "iron", "iron_tools"]);
+  assert.deepEqual(commodityRelationships("iron_ore"), {
+    madeFrom: [],
+    usedToMake: ["iron"],
+  });
+  assert.deepEqual(commodityRelationships("crops").usedToMake, [
+    "food",
+    "animal_feed",
+    "prepared_meal",
+  ]);
+});

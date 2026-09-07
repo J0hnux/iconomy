@@ -37,6 +37,14 @@ const expandedDimensions: ChartDimensions = {
   left: 24,
   right: 24,
 };
+const floatingDimensions: ChartDimensions = {
+  width: 620,
+  height: 250,
+  top: 14,
+  bottom: 30,
+  left: 16,
+  right: 16,
+};
 
 const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 const timeLabel = (time: number) =>
@@ -362,6 +370,7 @@ export function MarketPriceChart({
   timeframeId,
   currentTime,
   expanded = false,
+  floating = false,
   selectedPeriodStart,
   onSelectedPeriodStartChange,
 }: {
@@ -370,6 +379,7 @@ export function MarketPriceChart({
   timeframeId: MarketChartTimeframeId;
   currentTime: number;
   expanded?: boolean;
+  floating?: boolean;
   selectedPeriodStart: number | null;
   onSelectedPeriodStartChange: (startTime: number) => void;
 }) {
@@ -388,7 +398,7 @@ export function MarketPriceChart({
         No price observations yet.
       </p>
     );
-  const visibleLimit = expanded ? 180 : 48;
+  const visibleLimit = expanded ? 180 : floating ? 96 : 48;
   const candles = chart.candles.slice(-visibleLimit);
   const linePoints = chart.linePoints.slice(-visibleLimit);
   const periods = chartType === "line" ? linePoints : candles;
@@ -396,11 +406,19 @@ export function MarketPriceChart({
     periods.find((period) => period.startTime === hoveredStart) ??
     periods.find((period) => period.startTime === selectedPeriodStart) ??
     periods.at(-1)!;
-  const dimensions = expanded ? expandedDimensions : compactDimensions;
+  const dimensions = expanded
+    ? expandedDimensions
+    : floating
+      ? floatingDimensions
+      : compactDimensions;
   const latestPeriod = periods.at(-1)!;
   return (
     <div>
-      <div className={expanded ? "h-[min(52vh,30rem)]" : "h-40"}>
+      <div
+        className={
+          expanded ? "h-[min(52vh,30rem)]" : floating ? "h-64" : "h-40"
+        }
+      >
         {chartType === "line" ? (
           <LinePriceChart
             points={linePoints}
