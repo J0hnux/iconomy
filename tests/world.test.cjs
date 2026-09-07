@@ -4378,3 +4378,129 @@ test("the visible window keeps recent movement legible on a long flat history", 
   // The visible price scale reflects the crash rather than the old plateau.
   assert.equal(Math.min(...visible.map((candle) => candle.lowCents)), 445);
 });
+
+test("retention discards impossible future timestamps from a real poisoned history", () => {
+  const {
+    retainMarketPriceHistory,
+    latestPricePoint,
+    marketPriceHistoryRetentionMs,
+  } = require("../world/domain/market.ts");
+  const fixture = require("./fixtures/corrupt-price-history.json");
+  const toPoint = ([time, priceCents]) => ({ time, priceCents });
+  const history = [
+    ...fixture.points.head,
+    ...fixture.points.preBreak,
+    ...fixture.points.postBreak,
+    ...fixture.points.tail,
+  ].map(toPoint);
+  const latestTime = fixture.simulationTime;
+
+  // The captured history really is poisoned: points dated far beyond the clock.
+  assert.ok(history.some((point) => point.time > latestTime));
+  assert.ok(Math.max(...history.map((p) => p.time)) > 2e15);
+
+  const retained = retainMarketPriceHistory(history, latestTime);
+  // Nothing unreachable survives, and nothing outside the retention window does.
+  assert.equal(
+    retained.filter((point) => point.time > latestTime).length,
+    0,
+    "future timestamps must be discarded",
+  );
+  for (const point of retained) {
+    assert.ok(point.time <= latestTime);
+    assert.ok(point.time >= latestTime - marketPriceHistoryRetentionMs);
+  }
+  assert.ok(retained.length > 0, "genuine recent observations are kept");
+  // The survivors are exactly the real points from after the break that still
+  // fall inside the retention window; every poisoned one is gone.
+  assert.deepEqual(
+    retained.map((point) => point.time),
+    [...fixture.points.postBreak, ...fixture.points.tail].map(
+      ([time]) => time,
+    ),
+  );
+
+  // Retention is now idempotent on an already-clean history.
+  assert.deepEqual(retainMarketPriceHistory(retained, latestTime), retained);
+
+  // The latest point by time is the genuinely newest, not the array's last.
+  assert.equal(latestPricePoint(history).time, Math.max(...history.map((p) => p.time)));
+  assert.equal(
+    latestPricePoint(retained).time,
+    fixture.points.tail.at(-1)[0],
+  );
+  assert.equal(latestPricePoint([]), undefined);
+});
+
+test("a listing reports the newest observation by time, not by array position", () => {
+  const { buildMarketListings } = require("../world/domain/market.ts");
+  const { commodityRecord } = require("../world/domain/commodities.ts");
+  // Array order disagrees with time order, the shape that made the market
+  // header read $2.51 while the chart drew a flat $7.42.
+  const histories = commodityRecord([]);
+  histories.crops = [
+    { time: 5_000, priceCents: 700 },
+    { time: 20_000, priceCents: 251 },
+    { time: 10_000, priceCents: 742 },
+  ];
+  const listings = buildMarketListings(commodityRecord(0), histories);
+  const crops = listings.find((listing) => listing.commodity === "crops");
+  assert.equal(crops.priceCents, 251, "newest by time wins");
+  assert.equal(crops.previousPriceCents, 742, "second newest by time");
+
+  // Time-ordered history is unaffected.
+  const ordered = commodityRecord([]);
+  ordered.crops = [
+    { time: 5_000, priceCents: 700 },
+    { time: 10_000, priceCents: 742 },
+    { time: 20_000, priceCents: 251 },
+  ];
+  const same = buildMarketListings(commodityRecord(0), ordered).find(
+    (listing) => listing.commodity === "crops",
+  );
+  assert.equal(same.priceCents, 251);
+  assert.equal(same.previousPriceCents, 742);
+});
+
+test("a poisoned history heals as the simulation keeps recording", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const start = 1_788_768_863_171;
+  const simulation = new LocalGameSimulation(createStartingWorld(), start);
+  const save = simulation.read(start + 60_000) && simulation.exportSave();
+
+  // Inject the real corruption: far-future points alongside genuine ones.
+  const fixture = require("./fixtures/corrupt-price-history.json");
+  const poisoned = {
+    ...save,
+    priceHistory: {
+      ...save.priceHistory,
+      crops: [
+        ...fixture.points.preBreak.map(([time, priceCents]) => ({
+          time,
+          priceCents,
+        })),
+        ...save.priceHistory.crops,
+      ],
+    },
+  };
+  const restored = LocalGameSimulation.fromSave(
+    JSON.parse(JSON.stringify(poisoned)),
+  );
+  const economy = restored.read(start + 300_000).economy;
+  const crops = economy.market.listings.find(
+    (listing) => listing.commodity === "crops",
+  );
+
+  // Continuing to play trims the unreachable points away for good.
+  assert.equal(
+    crops.history.filter((point) => point.time > economy.simulationTime).length,
+    0,
+  );
+  assert.ok(Math.max(...crops.history.map((point) => point.time)) < 2e15);
+  // The listing price now matches the newest point the chart would draw.
+  const newest = [...crops.history].sort((a, b) => a.time - b.time).at(-1);
+  assert.equal(crops.priceCents, newest.priceCents);
+});

@@ -1,0 +1,33 @@
+{
+  "note": "Captured from a real Brave session whose crops price history had been poisoned with far-future timestamps. Points 0..1361 carried times up to year 79220 because a simulation tick advanced the clock by a full Unix epoch; points 1362.. are normal. Retention never removed the future points because it only trimmed points that were too old, so they survived every save and hijacked the chart, which sorts observations by time.",
+  "capturedFrom": "brave, localhost:3000",
+  "simulationTime": 1788781201512,
+  "totalPoints": 3831,
+  "breakIndex": 1362,
+  "epochAdvancePerTick": 1788762078359,
+  "points": {
+    "head": [
+      [3577524141718, 564],
+      [5366286220077, 632]
+    ],
+    "preBreak": [
+      [2432721017388920, 742],
+      [2434509786237091, 742],
+      [2436298555090262, 742],
+      [2438087323948433, 742]
+    ],
+    "postBreak": [
+      [1788768863171, 742],
+      [1788768868171, 742],
+      [1788768873171, 742],
+      [1788768878171, 742],
+      [1788768883171, 742],
+      [1788768888171, 742]
+    ],
+    "tail": [
+      [1788781188377, 742],
+      [1788781193377, 742],
+      [1788781198377, 742]
+    ]
+  }
+}

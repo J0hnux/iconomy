@@ -88,6 +88,13 @@ import {
 /** Periodic autosave cadence; player commands bypass it. */
 const autosaveIntervalMs = 10_000;
 
+/**
+ * Largest wall-clock step a single simulation advance may consume. Longer
+ * real-world gaps (a sleeping machine, a throttled tab) are absorbed rather
+ * than replayed, so the clock cannot leap out of the retention window.
+ */
+const maximumClockStepMs = 5 * 60_000;
+
 const button =
   "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-amber-200 disabled:opacity-30";
 
@@ -286,9 +293,19 @@ export default function WorldMap({
         );
       });
   }, []);
+  /**
+   * Advances simulation time by the wall clock elapsed since the last read.
+   *
+   * The step is clamped: an unset or stale wall-clock reference yields an
+   * elapsed of a whole Unix epoch, which previously advanced the simulation by
+   * tens of thousands of years and wrote unreachable timestamps into price
+   * history that no later retention pass could remove.
+   */
   const currentSimulationTime = useCallback(() => {
     const now = Date.now();
-    const elapsed = Math.max(0, now - lastWallTimeRef.current);
+    const since = lastWallTimeRef.current;
+    const elapsed =
+      since <= 0 ? 0 : Math.min(maximumClockStepMs, Math.max(0, now - since));
     lastWallTimeRef.current = now;
     simulationTimeRef.current += Math.round(elapsed * speedRef.current);
     return simulationTimeRef.current;

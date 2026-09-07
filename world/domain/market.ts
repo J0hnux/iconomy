@@ -120,14 +120,32 @@ export type PriceChartReadModel = Readonly<{
   candleIntervalMs: number;
 }>;
 
+/**
+ * Trims price history to the retention window.
+ *
+ * Points dated after the latest observation are discarded as well as points
+ * that are too old. A clock fault can record an impossible future timestamp,
+ * and such a point would otherwise pass every later cutoff, survive every save,
+ * and permanently outrank real observations wherever history is read in time
+ * order. Dropping them here lets an affected history heal on its next trim.
+ */
 export function retainMarketPriceHistory(
   history: readonly PricePoint[],
   latestTime: number,
 ) {
   const cutoff = latestTime - marketPriceHistoryRetentionMs;
   return history
-    .filter((point) => point.time >= cutoff)
+    .filter((point) => point.time >= cutoff && point.time <= latestTime)
     .slice(-marketPriceHistoryLimit);
+}
+
+/** The most recent observation by time, which array order may not agree with. */
+export function latestPricePoint(history: readonly PricePoint[]) {
+  return history.reduce<PricePoint | undefined>(
+    (latest, point) =>
+      latest === undefined || point.time >= latest.time ? point : latest,
+    undefined,
+  );
 }
 
 export function buildPriceChartReadModel(
@@ -359,9 +377,12 @@ export function buildMarketListings(
     const definition = marketDefinitions[commodity];
     const history = histories[commodity] ?? [];
     const available = inventory[commodity] ?? 0;
-    const latest = history.at(-1);
+    // Ordered by time, not by array position: a listing must never disagree
+    // with the chart, which reads the same history in time order.
+    const ordered = [...history].sort((first, second) => first.time - second.time);
+    const latest = ordered.at(-1);
     const priceCents = latest?.priceCents ?? marketPriceCents(commodity, available);
-    const previousPriceCents = history.at(-2)?.priceCents ?? priceCents;
+    const previousPriceCents = ordered.at(-2)?.priceCents ?? priceCents;
     return {
       commodity,
       name: definition.name,
