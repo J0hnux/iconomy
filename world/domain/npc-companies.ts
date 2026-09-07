@@ -221,6 +221,7 @@ function operateCompany(
   if (!home || company.facilities.length === 0)
     return {
       cities,
+      production: commodityRecord(0),
       company: {
         ...company,
         periodsObserved: company.periodsObserved + 1,
@@ -234,6 +235,7 @@ function operateCompany(
     };
   let totalProduced = 0;
   let totalInputCost = 0;
+  const production = commodityRecord(0);
   let latestRecipeId = company.facilities[0].recipeId;
   const facilities = company.facilities.map((facility) => {
     const recipe = productionRecipes[facility.recipeId];
@@ -306,6 +308,10 @@ function operateCompany(
       company.inventory,
     );
     company = { ...company, inventory: resolution.inventory };
+    for (const [commodity, quantity] of Object.entries(
+      resolution.producedOutputs,
+    ) as [Commodity, number][])
+      production[commodity] += quantity;
     totalProduced += Object.values(resolution.producedOutputs).reduce(
       (total, quantity) => total + (quantity ?? 0),
       0,
@@ -358,7 +364,7 @@ function operateCompany(
   };
   if (company.role === "expander")
     company = considerExpansion(company, cities, time);
-  return { cities, company };
+  return { cities, company, production };
 }
 
 function expectedRecipeMarginBasisPoints(
@@ -624,6 +630,7 @@ export function advanceNpcCompanies(input: Readonly<{
   let cities = input.cities.map(cloneNpcCity);
   let nextShipmentSequence = input.nextShipmentSequence;
   const shipments: RegionalShipment[] = [];
+  const production = commodityRecord(0);
   const companies = [...input.companies]
     .sort((first, second) => first.id.localeCompare(second.id))
     .map((company) => {
@@ -642,9 +649,17 @@ export function advanceNpcCompanies(input: Readonly<{
       }
       const result = operateCompany(cities, company, input.time);
       cities = result.cities;
+      for (const commodity of commodityIds)
+        production[commodity] += result.production[commodity];
       return result.company;
     });
-  return { cities, companies, shipments, nextShipmentSequence } as const;
+  return {
+    cities,
+    companies,
+    shipments,
+    nextShipmentSequence,
+    production,
+  } as const;
 }
 
 export function settleNpcCompanyShipment(

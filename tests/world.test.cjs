@@ -3587,3 +3587,412 @@ test("market intelligence is deterministic across identical simulations and save
       .marketIntelligence.reports.length > 0,
   );
 });
+
+test("industry periods record authoritative production facts and stay bounded", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const {
+    competitionPolicy,
+    retainIndustryPeriods,
+    emptyIndustryPeriodRecord,
+    isIndustryPeriodRecord,
+  } = require("../world/domain/competition.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+
+  assert.equal(simulation.read(1_000).economy.competition.periodsRecorded, 0);
+  const firstPeriod = simulation.read(70_000).economy.competition;
+  assert.equal(firstPeriod.periodsRecorded, 1);
+  assert.equal(simulation.read(200_000).economy.competition.periodsRecorded, 3);
+
+  // The starting farm's real output is attributed to the player, not to NPCs.
+  const crops = firstPeriod.positions.find(
+    (position) => position.commodity === "crops",
+  );
+  assert.ok(crops.playerSupply > 0);
+  assert.equal(crops.currentSupply, crops.playerSupply + crops.npcSupply);
+  assert.equal(
+    crops.playerSupplyShareBasisPoints,
+    Math.round((crops.playerSupply / crops.currentSupply) * 10_000),
+  );
+  assert.equal(crops.playerSiteCount, 1);
+
+  // Every commodity is positioned exactly once.
+  assert.equal(
+    new Set(firstPeriod.positions.map((position) => position.commodity)).size,
+    firstPeriod.positions.length,
+  );
+
+  const saved = simulation.exportSave();
+  assert.ok(saved.industryPeriods.every(isIndustryPeriodRecord));
+  let history = [];
+  for (let index = 0; index < competitionPolicy.periodHistoryLimit + 5; index++)
+    history = retainIndustryPeriods(
+      history,
+      emptyIndustryPeriodRecord(index * 60_000),
+    );
+  assert.equal(history.length, competitionPolicy.periodHistoryLimit);
+  assert.equal(history[0].time, 5 * 60_000);
+});
+
+test("NPC company production is reported per commodity without changing decisions", () => {
+  const {
+    advanceNpcCompanies,
+    createNpcCompanies,
+  } = require("../world/domain/npc-companies.ts");
+  const {
+    createNpcCities,
+    advanceNpcCities,
+  } = require("../world/domain/npc-cities.ts");
+  const { generateWorld } = require("../world/domain/world.ts");
+  const { commodityIds } = require("../world/domain/commodities.ts");
+  const cities = advanceNpcCities(createNpcCities(generateWorld()));
+  const companies = createNpcCompanies(cities);
+  const result = advanceNpcCompanies({
+    cities,
+    companies,
+    existingShipments: [],
+    time: 60_000,
+    nextShipmentSequence: 1,
+  });
+  assert.ok(result.production);
+  for (const commodity of commodityIds)
+    assert.ok(Number.isSafeInteger(result.production[commodity]));
+  assert.ok(
+    commodityIds.some((commodity) => result.production[commodity] > 0),
+    "at least one producing company should report output",
+  );
+  // Determinism and no change to the existing return contract.
+  const repeated = advanceNpcCompanies({
+    cities,
+    companies,
+    existingShipments: [],
+    time: 60_000,
+    nextShipmentSequence: 1,
+  });
+  assert.deepEqual(repeated.production, result.production);
+  assert.deepEqual(repeated.companies, result.companies);
+  assert.deepEqual(repeated.cities, result.cities);
+});
+
+test("industry position reports market size, share, growth, entrants, and real unit costs", () => {
+  const {
+    buildIndustryPositions,
+    emptyIndustryPeriodRecord,
+    unitInputCostCents,
+    entryCostCents,
+  } = require("../world/domain/competition.ts");
+  const {
+    detectMarketIntelligence,
+  } = require("../world/domain/market-intelligence.ts");
+  const { commodityRecord } = require("../world/domain/commodities.ts");
+
+  const period = (time, overrides) => ({
+    ...emptyIndustryPeriodRecord(time),
+    ...overrides,
+  });
+  const withCrops = (base, value) => ({ ...commodityRecord(0), crops: value });
+  const periods = [
+    period(60_000, {
+      playerProduction: withCrops(null, 10),
+      npcCityProduction: withCrops(null, 40),
+      npcCompanyProduction: withCrops(null, 10),
+      demand: withCrops(null, 30),
+      playerSites: withCrops(null, 1),
+      npcCapacity: withCrops(null, 2),
+    }),
+    period(120_000, {
+      playerProduction: withCrops(null, 20),
+      npcCityProduction: withCrops(null, 40),
+      npcCompanyProduction: withCrops(null, 20),
+      demand: withCrops(null, 30),
+      playerSites: withCrops(null, 2),
+      npcCapacity: withCrops(null, 4),
+    }),
+  ];
+  const intelligence = detectMarketIntelligence([], 120_000);
+  const positions = buildIndustryPositions({
+    periods,
+    sites: [
+      { output: "crops", paused: false, buildingId: "a", name: "Farm A" },
+      { output: "crops", paused: true, buildingId: "b", name: "Farm B" },
+    ],
+    priceOf: () => 500,
+    intelligence,
+    localLocationId: "novagrad",
+  });
+  const crops = positions.find((position) => position.commodity === "crops");
+  assert.equal(crops.playerSupply, 20);
+  assert.equal(crops.npcSupply, 60);
+  assert.equal(crops.currentSupply, 80);
+  assert.equal(crops.marketSizeUnits, 80);
+  assert.equal(crops.currentDemand, 30);
+  assert.equal(crops.playerSupplyShareBasisPoints, 2_500);
+  // Growth compares the newest period against the oldest in the window.
+  assert.equal(crops.npcSupplyGrowthUnits, 10);
+  assert.equal(crops.npcSupplyGrowthBasisPoints, 2_000);
+  // Entrants count added player sites and NPC capacity across the window.
+  assert.equal(crops.recentEntrants, 3);
+  assert.equal(crops.playerSiteCount, 2);
+  assert.equal(crops.playerActiveSiteCount, 1);
+  assert.equal(crops.playerPausedSiteCount, 1);
+
+  // Crops have no consumable inputs, so margin equals price; food does not.
+  assert.equal(crops.unitInputCostCents, 0);
+  assert.equal(crops.unitMarginCents, 500);
+  assert.equal(crops.entryCostCents, entryCostCents("farm"));
+  const food = positions.find((position) => position.commodity === "food");
+  assert.ok(food.unitInputCostCents > 0);
+  assert.equal(food.unitMarginCents, food.unitRevenueCents - food.unitInputCostCents);
+  assert.equal(unitInputCostCents("crops", () => 500), 0);
+  assert.ok(unitInputCostCents("food", () => 500) > 0);
+
+  // Deriving twice from the same inputs gives the same positions.
+  assert.deepEqual(
+    buildIndustryPositions({
+      periods,
+      sites: [
+        { output: "crops", paused: false, buildingId: "a", name: "Farm A" },
+        { output: "crops", paused: true, buildingId: "b", name: "Farm B" },
+      ],
+      priceOf: () => 500,
+      intelligence,
+      localLocationId: "novagrad",
+    }),
+    positions,
+  );
+});
+
+test("industry responses offer exit while active and re-entry while paused", () => {
+  const {
+    buildIndustryPositions,
+    emptyIndustryPeriodRecord,
+  } = require("../world/domain/competition.ts");
+  const {
+    detectMarketIntelligence,
+  } = require("../world/domain/market-intelligence.ts");
+  const intelligence = detectMarketIntelligence([], 60_000);
+  const kindsFor = (sites) =>
+    buildIndustryPositions({
+      periods: [emptyIndustryPeriodRecord(60_000)],
+      sites,
+      priceOf: () => 500,
+      intelligence,
+      localLocationId: "novagrad",
+    })
+      .find((position) => position.commodity === "crops")
+      .responses.map((response) => response.kind);
+
+  assert.deepEqual(kindsFor([]), ["expand"]);
+  assert.deepEqual(
+    kindsFor([{ output: "crops", paused: false, buildingId: "a", name: "A" }]),
+    ["expand", "reduce", "exit"],
+  );
+  assert.deepEqual(
+    kindsFor([{ output: "crops", paused: true, buildingId: "a", name: "A" }]),
+    ["expand", "reenter"],
+  );
+  assert.deepEqual(
+    kindsFor([
+      { output: "crops", paused: false, buildingId: "a", name: "A" },
+      { output: "crops", paused: true, buildingId: "b", name: "B" },
+    ]),
+    ["expand", "reduce", "exit", "reenter"],
+  );
+});
+
+test("exiting an industry pauses every site, frees labor, and is reversible", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const before = simulation.read(70_000).economy;
+  const farm = before.sites.find((site) => site.output === "crops");
+  assert.ok(farm.assignedWorkers > 0);
+  const assignedBefore = before.labor.assignedWorkers;
+
+  const exited = simulation.execute(
+    { type: "set_industry_paused", commodity: "crops", paused: true },
+    70_000,
+  );
+  assert.equal(exited.ok, true);
+  const afterExit = exited.readModel.economy;
+  for (const site of afterExit.sites.filter((s) => s.output === "crops")) {
+    assert.equal(site.paused, true);
+    assert.equal(site.assignedWorkers, 0);
+  }
+  // Released labor is genuinely available to other industries.
+  assert.equal(
+    afterExit.labor.assignedWorkers,
+    assignedBefore - farm.assignedWorkers,
+  );
+  assert.ok(
+    afterExit.market.events.some((event) => /Exited Crops/.test(event.message)),
+  );
+  // Sites producing other commodities are untouched.
+  const quarry = afterExit.sites.find((site) => site.output === "stone");
+  assert.equal(quarry.paused, false);
+
+  // Repeating the command is a no-op rather than an error.
+  assert.equal(
+    simulation.execute(
+      { type: "set_industry_paused", commodity: "crops", paused: true },
+      70_000,
+    ).ok,
+    true,
+  );
+
+  // Reversible: re-entering resumes the sites.
+  const reentered = simulation.execute(
+    { type: "set_industry_paused", commodity: "crops", paused: false },
+    70_000,
+  );
+  assert.equal(reentered.ok, true);
+  const resumed = reentered.readModel.economy.sites.find(
+    (site) => site.output === "crops",
+  );
+  assert.equal(resumed.paused, false);
+  assert.ok(
+    reentered.readModel.economy.market.events.some((event) =>
+      /Re-entered Crops/.test(event.message),
+    ),
+  );
+
+  // An industry the player does not run is rejected without mutation.
+  const rejected = simulation.execute(
+    { type: "set_industry_paused", commodity: "prepared_meal", paused: true },
+    70_000,
+  );
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.status, 422);
+  assert.match(rejected.error, /No production site currently produces/);
+  assert.deepEqual(
+    rejected.readModel.economy.sites,
+    simulation.read(70_000).economy.sites,
+  );
+});
+
+test("player supply moves price and flips the industry into oversupply", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const start = simulation.read(70_000).economy;
+  const farm = start.sites.find((site) => site.output === "crops");
+  const priceBefore = start.market.listings.find(
+    (listing) => listing.commodity === "crops",
+  ).priceCents;
+
+  const dispatched = simulation.execute(
+    { type: "dispatch_production", buildingId: farm.buildingId },
+    70_000,
+  );
+  assert.equal(dispatched.ok, true);
+  assert.ok(dispatched.collected > 0);
+  const arrival = dispatched.shipment.arrivalTime;
+  const after = simulation.read(arrival + 15_000).economy;
+  const priceAfter = after.market.listings.find(
+    (listing) => listing.commodity === "crops",
+  ).priceCents;
+
+  // Supplying the market lowers the price the player can sell into.
+  assert.ok(
+    priceAfter < priceBefore,
+    `expected ${priceAfter} < ${priceBefore}`,
+  );
+  const position = after.competition.positions.find(
+    (candidate) => candidate.commodity === "crops",
+  );
+  assert.equal(position.condition, "severe_oversupply");
+  // Margin falls with the price, so the industry becomes less attractive.
+  assert.ok(position.unitMarginCents < priceBefore);
+  assert.ok(
+    position.responses.some((response) => response.kind === "exit"),
+    "an oversupplied industry the player runs can be exited",
+  );
+});
+
+test("competition read model is deterministic and survives save loading", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const first = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const second = new LocalGameSimulation(createStartingWorld(), 1_000);
+  assert.deepEqual(
+    second.read(300_000).economy.competition,
+    first.read(300_000).economy.competition,
+  );
+
+  const stepped = new LocalGameSimulation(createStartingWorld(), 1_000);
+  for (let time = 20_000; time <= 300_000; time += 20_000) stepped.read(time);
+  assert.deepEqual(
+    stepped.read(300_000).economy.competition,
+    first.read(300_000).economy.competition,
+  );
+
+  // Reading does not advance or mutate authoritative state.
+  const snapshot = JSON.parse(JSON.stringify(first.exportSave()));
+  first.read(300_000);
+  assert.deepEqual(JSON.parse(JSON.stringify(first.exportSave())), snapshot);
+
+  const restored = LocalGameSimulation.fromSave(
+    JSON.parse(JSON.stringify(first.exportSave())),
+  );
+  assert.deepEqual(
+    restored.read(300_000).economy.competition,
+    first.read(300_000).economy.competition,
+  );
+  // Industry history and pending output round-trip exactly.
+  assert.deepEqual(
+    restored.exportSave().industryPeriods,
+    first.exportSave().industryPeriods,
+  );
+  assert.deepEqual(
+    restored.exportSave().pendingPlayerProduction,
+    first.exportSave().pendingPlayerProduction,
+  );
+
+  // A legacy save without competition fields still loads and rebuilds history.
+  const legacy = JSON.parse(JSON.stringify(first.exportSave()));
+  delete legacy.industryPeriods;
+  delete legacy.pendingPlayerProduction;
+  const migrated = LocalGameSimulation.fromSave(legacy);
+  assert.equal(migrated.read(300_000).economy.competition.periodsRecorded, 0);
+  assert.ok(
+    migrated.read(400_000).economy.competition.periodsRecorded > 0,
+    "a migrated save resumes recording periods",
+  );
+});
+
+test("industry positions expose competition without promising a profit", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const competition = simulation.read(300_000).economy.competition;
+  assert.equal(competition.updatedAt, 300_000);
+  for (const position of competition.positions) {
+    // Margin is stated as price minus input cost, never as realized profit.
+    assert.equal(
+      position.unitMarginCents,
+      position.unitRevenueCents - position.unitInputCostCents,
+    );
+    for (const response of position.responses)
+      assert.ok(
+        !/guaranteed|risk-free|always profitable|optimal/i.test(
+          `${response.label} ${response.detail}`,
+        ),
+      );
+  }
+  // NPC capacity growth is observable, so opportunities are not static.
+  const ironOre = competition.positions.find(
+    (position) => position.commodity === "iron_ore",
+  );
+  assert.ok(Number.isSafeInteger(ironOre.npcSupplyGrowthUnits));
+  assert.ok(ironOre.npcSupply > 0);
+});

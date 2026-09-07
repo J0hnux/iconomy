@@ -7,6 +7,7 @@ import {
 import type { LogisticsSnapshot } from "./logistics";
 import type { MarketSnapshot } from "./market";
 import type { MarketIntelligenceSnapshot } from "./market-intelligence";
+import type { CompetitionSnapshot } from "./competition";
 import type { PopulationSnapshot } from "./population";
 import type { NpcCityState } from "./npc-cities";
 import type { NpcCompanyState } from "./npc-companies";
@@ -310,6 +311,7 @@ export type ProductionSnapshot = Readonly<{
   logistics: LogisticsSnapshot;
   market: MarketSnapshot;
   marketIntelligence: MarketIntelligenceSnapshot;
+  competition: CompetitionSnapshot;
   npcCities: readonly NpcCityState[];
   npcCompanies: readonly NpcCompanyState[];
   regionalLogistics: RegionalLogisticsSnapshot;

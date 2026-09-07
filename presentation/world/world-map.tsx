@@ -37,6 +37,11 @@ import {
   type MarketCondition,
 } from "@/world/domain/market-intelligence";
 import {
+  competitionPolicy,
+  type IndustryPosition,
+  type IndustryResponseKind,
+} from "@/world/domain/competition";
+import {
   LocalGameSimulation,
   type CommandResult,
   type GameCommand,
@@ -533,6 +538,15 @@ export default function WorldMap({
       "Changing production priority…",
       () => `Production priority set to ${priority}.`,
     );
+  const setIndustryPaused = (commodity: Commodity, paused: boolean) =>
+    issueProductionCommand(
+      { type: "set_industry_paused", commodity, paused },
+      paused ? "Exiting industry…" : "Re-entering industry…",
+      () =>
+        paused
+          ? `Exited ${commodityDefinitions[commodity].name}. Workers are free for other industries.`
+          : `Re-entered ${commodityDefinitions[commodity].name}. Assign workers to restart output.`,
+    );
   const dispatchProduction = (site: ProductionSite) =>
     issueProductionCommand(
       { type: "dispatch_production", buildingId: site.buildingId },
@@ -683,6 +697,45 @@ export default function WorldMap({
       `Choose a valid site for another ${buildingDefinitions[producerType].name} that can produce ${commodityDefinitions[commodity].name}.`,
     );
   };
+  /**
+   * Routes an industry response to the verb that already owns it. Every branch
+   * ends in an existing authoritative command or an existing build/inspect flow.
+   */
+  const respondToIndustry = (
+    position: IndustryPosition,
+    kind: IndustryResponseKind,
+  ) => {
+    if (kind === "exit") {
+      setIndustryPaused(position.commodity, true);
+      return;
+    }
+    if (kind === "reenter") {
+      setIndustryPaused(position.commodity, false);
+      return;
+    }
+    if (kind === "expand") {
+      buildMoreProduction(position.commodity);
+      return;
+    }
+    if (kind === "reduce") {
+      const site = production?.sites.find(
+        (candidate) =>
+          candidate.output === position.commodity && !candidate.paused,
+      );
+      if (!site) return;
+      setMarketOpen(false);
+      focusBuilding(site.buildingId);
+      setProductionMessage(
+        `Lower the worker count on ${site.name} to reduce ${position.commodityName} output without losing the building.`,
+      );
+      return;
+    }
+    setMarketOpen(false);
+    setRegionalTradeOpen(true);
+    setRegionalTradeMessage(
+      `Choose a destination that pays more for ${position.commodityName} than Novagrad's ${money(position.priceCents)}.`,
+    );
+  };
   const confirmPlacement = (candidate: SurfaceCell | null) => {
     if (tool !== "build" || !candidate || submitting) return;
     const request: PlacementRequest = {
@@ -822,7 +875,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestone 24
+              Prototype / Milestone 25
             </p>
           </div>
         </div>
@@ -1596,6 +1649,99 @@ export default function WorldMap({
                             </ul>
                           </div>
                         )}
+                      </article>
+                    ))}
+                </div>
+              </div>
+              <div className="mt-5">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-violet-200">
+                  Competitive response
+                </p>
+                <p className="mt-1 text-[10px] leading-4 text-slate-400">
+                  Your position in each industry, and what you can do about it.
+                  Margin is price minus input cost, not profit.
+                </p>
+                <div className="mt-2 space-y-2">
+                  {production.competition.positions
+                    .filter(
+                      (position) =>
+                        position.playerSiteCount > 0 ||
+                        (position.condition !== null &&
+                          position.condition !== "balanced"),
+                    )
+                    .slice(0, competitionPolicy.periodHistoryLimit)
+                    .map((position) => (
+                      <article
+                        key={position.commodity}
+                        className="rounded-xl border border-white/10 bg-black/15 p-3"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="text-xs font-semibold text-slate-100">
+                              {position.commodityName}
+                            </h3>
+                            <p className="mt-1 text-[9px] uppercase tracking-wide text-slate-400">
+                              {position.playerSiteCount === 0
+                                ? "Not in this industry"
+                                : `${position.playerActiveSiteCount}/${position.playerSiteCount} site${position.playerSiteCount === 1 ? "" : "s"} active`}
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <p className="font-mono text-[11px] text-slate-200">
+                              {money(position.priceCents)}
+                            </p>
+                            <p
+                              className={`text-[9px] ${position.unitMarginCents >= 0 ? "text-emerald-300" : "text-red-300"}`}
+                            >
+                              {money(position.unitMarginCents)} / unit margin
+                            </p>
+                          </div>
+                        </div>
+                        <dl className="mt-2 grid grid-cols-3 gap-1 text-center text-[10px]">
+                          {[
+                            ["Market size", `${position.marketSizeUnits}`],
+                            ["Supply", `${position.currentSupply}`],
+                            ["Demand", `${position.currentDemand}`],
+                            [
+                              "Your share",
+                              `${(position.playerSupplyShareBasisPoints / 100).toFixed(1)}%`,
+                            ],
+                            [
+                              "NPC growth",
+                              `${position.npcSupplyGrowthUnits >= 0 ? "+" : ""}${position.npcSupplyGrowthUnits}`,
+                            ],
+                            ["Entrants", `${position.recentEntrants}`],
+                          ].map(([label, value]) => (
+                            <div key={label}>
+                              <dt className="text-slate-500">{label}</dt>
+                              <dd className="mt-0.5 font-mono text-slate-200">
+                                {value}
+                              </dd>
+                            </div>
+                          ))}
+                        </dl>
+                        <p className="mt-2 text-[10px] leading-4 text-slate-400">
+                          Input cost {money(position.unitInputCostCents)} per
+                          unit · entry {money(position.entryCostCents)} ·
+                          regional median{" "}
+                          {money(position.regionalMedianPriceCents)}
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-1 border-t border-white/10 pt-2">
+                          {position.responses.map((response) => (
+                            <button
+                              key={response.kind}
+                              type="button"
+                              title={response.detail}
+                              disabled={productionBusy}
+                              className={`${button} px-2 py-1 text-[10px] disabled:opacity-50`}
+                              onClick={() =>
+                                respondToIndustry(position, response.kind)
+                              }
+                            >
+                              {response.label}
+                            </button>
+                          ))}
+                        </div>
                       </article>
                     ))}
                 </div>

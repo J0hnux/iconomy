@@ -65,6 +65,14 @@ import {
 } from "../domain/population";
 import { describeLabor, validateLaborAssignment } from "../domain/labor";
 import {
+  buildCompetitionSnapshot,
+  cloneIndustryPeriodRecord,
+  emptyIndustryPeriodRecord,
+  isIndustryPeriodRecord,
+  retainIndustryPeriods,
+  type IndustryPeriodRecord,
+} from "../domain/competition";
+import {
   detectMarketIntelligence,
   novagradMarketObservations,
   npcCityMarketObservations,
@@ -149,6 +157,11 @@ export type GameCommand =
       expectedOriginPriceCents: number;
       expectedDestinationPriceCents: number;
     }>
+  | Readonly<{
+      type: "set_industry_paused";
+      commodity: Commodity;
+      paused: boolean;
+    }>
   | Readonly<{ type: "demolish"; buildingId: string }>;
 
 export type GameReadModel = Readonly<{
@@ -211,6 +224,8 @@ export type LocalSimulationSaveV1 = Readonly<{
   npcCompaniesUpdatedAt?: number;
   regionalShipments?: readonly RegionalShipment[];
   nextRegionalShipment?: number;
+  industryPeriods?: readonly IndustryPeriodRecord[];
+  pendingPlayerProduction?: Readonly<Record<Commodity, number>>;
 }>;
 
 type MutableSimulationState = {
@@ -237,6 +252,8 @@ type MutableSimulationState = {
   npcCompaniesUpdatedAt: number;
   regionalShipments: RegionalShipment[];
   nextRegionalShipment: number;
+  industryPeriods: IndustryPeriodRecord[];
+  pendingPlayerProduction: Record<Commodity, number>;
 };
 
 export function createStartingWorld() {
@@ -352,7 +369,22 @@ function isLocalSimulationSaveV1(
         ).size !== value.regionalShipments.length)) ||
     (value.nextRegionalShipment !== undefined &&
       (!Number.isSafeInteger(value.nextRegionalShipment) ||
-        (value.nextRegionalShipment as number) < 1))
+        (value.nextRegionalShipment as number) < 1)) ||
+    (value.industryPeriods !== undefined &&
+      (!Array.isArray(value.industryPeriods) ||
+        !value.industryPeriods.every(isIndustryPeriodRecord) ||
+        value.industryPeriods.some(
+          (record) => record.time > (value.simulationTime as number),
+        ))) ||
+    (value.pendingPlayerProduction !== undefined &&
+      (!isRecord(value.pendingPlayerProduction) ||
+        !commodityIds.every((commodity) =>
+          isNonnegativeInteger(
+            (value.pendingPlayerProduction as Record<string, unknown>)[
+              commodity
+            ],
+          ),
+        )))
   )
     return false;
   for (const commodity of ["food", "wood", "stone"] as Commodity[]) {
@@ -482,6 +514,12 @@ export class LocalGameSimulation {
           cloneRegionalShipment,
         ),
         nextRegionalShipment: restored.nextRegionalShipment ?? 1,
+        industryPeriods: (restored.industryPeriods ?? []).map(
+          cloneIndustryPeriodRecord,
+        ),
+        pendingPlayerProduction: normalizeCommodityInventory(
+          restored.pendingPlayerProduction ?? {},
+        ),
       };
       for (const building of this.producers) {
         const existing = this.state.productionStates.get(building.id);
@@ -646,6 +684,8 @@ export class LocalGameSimulation {
       npcCompaniesUpdatedAt: startTime,
       regionalShipments: [],
       nextRegionalShipment: 1,
+      industryPeriods: [],
+      pendingPlayerProduction: commodityRecord(0),
     };
   }
 
@@ -699,6 +739,8 @@ export class LocalGameSimulation {
         );
       case "create_regional_shipment":
         return this.createPlayerRegionalShipment(command);
+      case "set_industry_paused":
+        return this.setIndustryPaused(command.commodity, command.paused);
       case "demolish":
         return this.demolish(command.buildingId);
     }
@@ -749,6 +791,10 @@ export class LocalGameSimulation {
         cloneRegionalShipment,
       ),
       nextRegionalShipment: this.state.nextRegionalShipment,
+      industryPeriods: this.state.industryPeriods.map(
+        cloneIndustryPeriodRecord,
+      ),
+      pendingPlayerProduction: { ...this.state.pendingPlayerProduction },
     };
   }
 
@@ -884,6 +930,7 @@ export class LocalGameSimulation {
           ...plan.shipments,
         ]);
         this.state.nextRegionalShipment = plan.nextShipmentSequence;
+        this.recordIndustryPeriod(boundaryTime, companyResult.production);
       }
       if (regionalArrivalTime === boundaryTime) {
         for (const shipment of this.state.regionalShipments
@@ -971,6 +1018,11 @@ export class LocalGameSimulation {
         simulationTime,
         this.state.warehouseInventory,
       );
+      if (resolution.completedCycles > 0) {
+        const produced = recipeOutput(recipeForState(state, building.type));
+        this.state.pendingPlayerProduction[produced.commodity] +=
+          produced.amount * resolution.completedCycles;
+      }
       this.state.productionStates.set(building.id, resolution.state);
       this.state.warehouseInventory = { ...resolution.inventory };
       for (const [commodity, quantity] of Object.entries(
@@ -1616,6 +1668,104 @@ export class LocalGameSimulation {
     }
   }
 
+  /**
+   * Records one period of authoritative production facts. Reads state the
+   * simulation already owns; the competition read model derives from these.
+   */
+  private recordIndustryPeriod(
+    time: number,
+    npcCompanyProduction: Readonly<Record<Commodity, number>>,
+  ) {
+    const record = emptyIndustryPeriodRecord(time);
+    const playerProduction = { ...record.playerProduction };
+    const npcCityProduction = { ...record.npcCityProduction };
+    const companyProduction = { ...record.npcCompanyProduction };
+    const demand = { ...record.demand };
+    const playerSites = { ...record.playerSites };
+    const npcCapacity = { ...record.npcCapacity };
+    for (const commodity of commodityIds) {
+      playerProduction[commodity] =
+        this.state.pendingPlayerProduction[commodity];
+      companyProduction[commodity] = npcCompanyProduction[commodity] ?? 0;
+      for (const city of this.state.npcCities) {
+        npcCityProduction[commodity] += city.recentProduction[commodity];
+        demand[commodity] += city.recentConsumption[commodity];
+      }
+    }
+    const localConsumption = this.state.lastFoodConsumption;
+    if (localConsumption)
+      for (const source of localConsumption.sources)
+        demand[source.commodity] += source.unitsConsumed;
+    for (const building of this.producers) {
+      const state = this.state.productionStates.get(building.id);
+      if (!state) continue;
+      playerSites[recipeOutput(recipeForState(state, building.type)).commodity] +=
+        1;
+    }
+    for (const company of this.state.npcCompanies)
+      for (const facility of company.facilities)
+        npcCapacity[
+          recipeOutput(productionRecipes[facility.recipeId]).commodity
+        ] += facility.capacity;
+    this.state.industryPeriods = retainIndustryPeriods(
+      this.state.industryPeriods,
+      {
+        time,
+        playerProduction,
+        npcCityProduction,
+        npcCompanyProduction: companyProduction,
+        demand,
+        playerSites,
+        npcCapacity,
+      },
+    );
+    this.state.pendingPlayerProduction = commodityRecord(0);
+  }
+
+  private setIndustryPaused(
+    commodity: Commodity,
+    paused: boolean,
+  ): CommandResult {
+    if (!commodityIds.includes(commodity))
+      return this.failure(400, "Unknown commodity.");
+    if (typeof paused !== "boolean")
+      return this.failure(400, "Paused state must be a boolean.");
+    const targets = this.producers.flatMap((building) => {
+      const state = this.state.productionStates.get(building.id);
+      if (!state) return [];
+      const output = recipeOutput(recipeForState(state, building.type));
+      return output.commodity === commodity ? [{ building, state }] : [];
+    });
+    if (targets.length === 0)
+      return this.failure(
+        422,
+        `No production site currently produces ${commodityDefinitions[commodity].name}.`,
+      );
+    const changing = targets.filter(
+      ({ state }) => (state.paused ?? false) !== paused,
+    );
+    if (changing.length === 0) return this.success();
+    let releasedWorkers = 0;
+    for (const { building, state } of changing) {
+      releasedWorkers += paused ? state.assignedWorkers : 0;
+      this.state.productionStates.set(building.id, {
+        ...state,
+        paused,
+        assignedWorkers: paused ? 0 : state.assignedWorkers,
+        updatedAt: this.state.simulationTime,
+      });
+    }
+    const name = commodityDefinitions[commodity].name;
+    this.addEvent(
+      this.state.simulationTime,
+      "production",
+      paused
+        ? `Exited ${name}: ${changing.length} site${changing.length === 1 ? "" : "s"} paused${releasedWorkers ? `, releasing ${releasedWorkers} worker${releasedWorkers === 1 ? "" : "s"}` : ""}.`
+        : `Re-entered ${name}: ${changing.length} site${changing.length === 1 ? "" : "s"} resumed and ready for workers.`,
+    );
+    return this.success();
+  }
+
   private novagradRegionalFlow() {
     const imports = commodityRecord(0);
     const exports = commodityRecord(0);
@@ -1673,6 +1823,7 @@ export class LocalGameSimulation {
       ),
     );
     const listings = this.marketListings();
+    const intelligence = this.marketIntelligence(listings);
     return {
       simulationTime: this.state.simulationTime,
       population,
@@ -1691,7 +1842,17 @@ export class LocalGameSimulation {
         opportunities: buildEconomicOpportunities(listings, sites),
         events: this.state.events.slice(-12).reverse(),
       },
-      marketIntelligence: this.marketIntelligence(listings),
+      marketIntelligence: intelligence,
+      competition: buildCompetitionSnapshot({
+        updatedAt: this.state.simulationTime,
+        periods: this.state.industryPeriods,
+        sites,
+        priceOf: (commodity) =>
+          listings.find((listing) => listing.commodity === commodity)
+            ?.priceCents ?? marketDefinitions[commodity].basePriceCents,
+        intelligence,
+        localLocationId: "novagrad",
+      }),
       npcCities: this.state.npcCities.map(cloneNpcCity),
       npcCompanies: this.state.npcCompanies.map(cloneNpcCompany),
       regionalLogistics: {
