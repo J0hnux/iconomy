@@ -226,7 +226,36 @@ export const defaultRecipeByProducer: Record<ProducerType, RecipeId> = {
   workshop: "make_basic_food",
 };
 
+export const productionPriorities = ["low", "normal", "high"] as const;
+export type ProductionPriority = (typeof productionPriorities)[number];
+
+const priorityRank: Record<ProductionPriority, number> = {
+  low: 0,
+  normal: 1,
+  high: 2,
+};
+
+export function isProductionPriority(
+  value: unknown,
+): value is ProductionPriority {
+  return (
+    typeof value === "string" &&
+    productionPriorities.includes(value as ProductionPriority)
+  );
+}
+
+export function compareProductionPriority(
+  first: Pick<ProductionState, "buildingId" | "priority">,
+  second: Pick<ProductionState, "buildingId" | "priority">,
+) {
+  const priorityDifference =
+    priorityRank[second.priority ?? "normal"] -
+    priorityRank[first.priority ?? "normal"];
+  return priorityDifference || first.buildingId.localeCompare(second.buildingId);
+}
+
 export type ProductionStatus =
+  | "paused"
   | "running"
   | "missing_workers"
   | "worker_shortage"
@@ -237,6 +266,8 @@ export type ProductionStatus =
 export type ProductionState = Readonly<{
   buildingId: string;
   recipeId?: RecipeId;
+  paused?: boolean;
+  priority?: ProductionPriority;
   assignedWorkers: number;
   stored: number;
   progressMs: number;
@@ -258,6 +289,9 @@ export type ProductionSite = ProductionState &
     consumableInputs: Readonly<Partial<Record<Commodity, number>>>;
     equipmentRequirements: Readonly<Partial<Record<Commodity, number>>>;
     destinationStorage: "site";
+    paused: boolean;
+    priority: ProductionPriority;
+    expectedOutputPerCycle: number;
     status: ProductionStatus;
     statusReason: string;
     laborEfficiency: number;
@@ -327,6 +361,7 @@ export function productionStatus(
 ): ProductionStatus {
   const selected = recipeForState(state, type);
   const output = recipeOutput(selected);
+  if (state.paused) return "paused";
   if (state.stored + output.amount > selected.storageCapacity)
     return "storage_full";
   if (state.assignedWorkers === 0) return "missing_workers";
@@ -360,7 +395,12 @@ export function resolveProduction(
   inventory: CommodityInventory,
 ): ProductionResolution {
   const selected = recipeForState(state, type);
-  const normalizedState = { ...state, recipeId: selected.id };
+  const normalizedState = {
+    ...state,
+    recipeId: selected.id,
+    paused: state.paused ?? false,
+    priority: state.priority ?? "normal",
+  };
   const elapsed = Math.max(0, now - state.updatedAt);
   const blocked = productionStatus(normalizedState, type, inventory);
   if (!["running", "worker_shortage"].includes(blocked))
@@ -476,7 +516,9 @@ export function describeProduction(
     inventory,
   );
   const statusReason =
-    status === "storage_full"
+    status === "paused"
+      ? "Production is paused. Resume it, then assign workers to continue."
+      : status === "storage_full"
       ? `Output storage is full. Dispatch ${commodityDefinitions[output.commodity].name} to resume.`
       : status === "missing_workers"
         ? `No workers assigned. Needs ${selected.requiredWorkers} workers to produce.`
@@ -487,9 +529,15 @@ export function describeProduction(
             : status === "worker_shortage"
               ? `Worker shortage: producing at ${Math.round(efficiency * 100)}% labor efficiency and needs ${selected.requiredWorkers - state.assignedWorkers} more worker${selected.requiredWorkers - state.assignedWorkers === 1 ? "" : "s"}.`
               : `Producing ${commodityDefinitions[output.commodity].name} at 100% labor efficiency every ${selected.durationMs / 1000} seconds.`;
+  const expectedOutputPerCycle =
+    status === "running" || status === "worker_shortage"
+      ? output.amount * efficiency
+      : 0;
   return {
     ...state,
     recipeId: selected.id,
+    paused: state.paused ?? false,
+    priority: state.priority ?? "normal",
     type: building.type,
     name:
       building.type === "lumber_camp"
@@ -510,6 +558,7 @@ export function describeProduction(
     consumableInputs: selected.consumableInputs,
     equipmentRequirements: selected.equipmentRequirements,
     destinationStorage: selected.destinationStorage,
+    expectedOutputPerCycle,
     status,
     statusReason,
     laborEfficiency: efficiency,

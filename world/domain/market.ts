@@ -157,6 +157,18 @@ export function buildEconomicOpportunities(
       );
       if (!site || listing.shortage === "none") return [];
       const price = `$${(listing.priceCents / 100).toFixed(2)}`;
+      if (site.status === "paused")
+        return [
+          {
+            id: `${listing.commodity}-resume`,
+            commodity: listing.commodity,
+            title: `Resume ${site.name}`,
+            reason: `${listing.name} is short at ${price}; production is paused.`,
+            actionLabel: "Open producer",
+            targetBuildingId: site.buildingId,
+            priority: 110,
+          },
+        ];
       if (
         site.status === "missing_workers" ||
         site.status === "worker_shortage"

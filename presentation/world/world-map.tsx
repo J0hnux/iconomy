@@ -21,14 +21,18 @@ import type {
   ProductionSite,
 } from "@/world/domain/production";
 import {
+  availableRecipes,
   defaultRecipeByProducer,
   isProducerType,
+  productionPriorities,
   productionRecipes,
 } from "@/world/domain/production";
 import { commodityDefinitions } from "@/world/domain/commodities";
 import type { PricePoint } from "@/world/domain/market";
 import {
   LocalGameSimulation,
+  type CommandResult,
+  type GameCommand,
   type GameReadModel,
 } from "@/world/simulation/game-simulation";
 import {
@@ -418,37 +422,24 @@ export default function WorldMap({
     }));
     setBuildMessage("A valid physical site is selected. Review affordability, then click the footprint to build.");
   };
-  const updateProduction = (
-    site: ProductionSite,
-    action: "set_workers" | "collect",
-    workers?: number,
+  const issueProductionCommand = (
+    command: GameCommand,
+    pendingMessage: string,
+    successMessage: (
+      result: Extract<CommandResult, { ok: true }>,
+    ) => string,
   ) => {
     if (productionBusy) return;
     setProductionBusy(true);
-    setProductionMessage(
-      action === "collect" ? "Dispatching output…" : "Assigning workers…",
-    );
+    setProductionMessage(pendingMessage);
     try {
       const simulation = simulationRef.current;
       if (!simulation) throw new Error("Local simulation is starting.");
-      const result = simulation.execute(
-        action === "collect"
-          ? { type: "dispatch_production", buildingId: site.buildingId }
-          : {
-              type: "set_workers",
-              buildingId: site.buildingId,
-              workers: workers as number,
-            },
-        currentSimulationTime(),
-      );
+      const result = simulation.execute(command, currentSimulationTime());
       applyReadModel(result.readModel);
       persistSimulation(simulation);
       if (!result.ok) throw new Error(result.error);
-      setProductionMessage(
-        action === "collect"
-          ? `${result.collected ?? 0} ${site.output} dispatched to the warehouse.`
-          : "Worker assignment updated.",
-      );
+      setProductionMessage(successMessage(result));
     } catch (error) {
       setProductionMessage(
         error instanceof Error ? error.message : "Production command failed.",
@@ -457,6 +448,51 @@ export default function WorldMap({
       setProductionBusy(false);
     }
   };
+  const updateWorkers = (site: ProductionSite, workers: number) =>
+    issueProductionCommand(
+      { type: "set_workers", buildingId: site.buildingId, workers },
+      "Assigning workers…",
+      () => "Worker assignment updated.",
+    );
+  const setProductionPaused = (site: ProductionSite, paused: boolean) =>
+    issueProductionCommand(
+      {
+        type: "set_production_paused",
+        buildingId: site.buildingId,
+        paused,
+      },
+      paused ? "Pausing production…" : "Resuming production…",
+      () => (paused ? "Production paused and workers released." : "Production resumed. Assign workers when ready."),
+    );
+  const setProductionRecipe = (
+    site: ProductionSite,
+    recipeId: ProductionSite["recipeId"],
+  ) =>
+    issueProductionCommand(
+      { type: "set_recipe", buildingId: site.buildingId, recipeId },
+      "Changing recipe…",
+      () => "Production recipe updated.",
+    );
+  const setProductionPriority = (
+    site: ProductionSite,
+    priority: ProductionSite["priority"],
+  ) =>
+    issueProductionCommand(
+      {
+        type: "set_production_priority",
+        buildingId: site.buildingId,
+        priority,
+      },
+      "Changing production priority…",
+      () => `Production priority set to ${priority}.`,
+    );
+  const dispatchProduction = (site: ProductionSite) =>
+    issueProductionCommand(
+      { type: "dispatch_production", buildingId: site.buildingId },
+      "Dispatching output…",
+      (result) =>
+        `${result.collected ?? 0} ${commodityDefinitions[site.output].name} dispatched to the warehouse.`,
+    );
   const sellGoods = (
     commodity: Commodity,
     quantity: number,
@@ -640,7 +676,7 @@ export default function WorldMap({
               OpenWorld Economy
             </h1>
             <p className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
-              Prototype / Milestones 0–15
+              Prototype / Milestones 0–16
             </p>
           </div>
         </div>
@@ -1228,7 +1264,9 @@ export default function WorldMap({
                       (candidate) => candidate.id === site.buildingId,
                     );
                     const statusLabel =
-                      site.status === "storage_full"
+                      site.status === "paused"
+                        ? "Paused"
+                        : site.status === "storage_full"
                         ? "Storage full"
                         : site.status === "missing_inputs"
                           ? "Missing inputs"
@@ -1266,9 +1304,12 @@ export default function WorldMap({
                             {" labor · "}{site.stored}/{site.storageCapacity}{" "}
                             {commodityDefinitions[site.output].name}
                           </span>
+                          <span className="mt-1 block text-[10px] capitalize text-slate-500">
+                            {site.priority} priority · expected {site.expectedOutputPerCycle.toFixed(1)} per cycle
+                          </span>
                         </span>
                         <span
-                          className={`shrink-0 text-[10px] ${site.status === "running" || site.status === "worker_shortage" ? "text-emerald-300" : site.status === "missing_workers" ? "text-amber-300" : "text-red-300"}`}
+                          className={`shrink-0 text-[10px] ${site.status === "running" || site.status === "worker_shortage" ? "text-emerald-300" : site.status === "missing_workers" || site.status === "paused" ? "text-amber-300" : "text-red-300"}`}
                         >
                           ● {statusLabel}
                         </span>
@@ -1583,9 +1624,11 @@ export default function WorldMap({
             <div className="mt-4 rounded-xl border border-white/10 bg-black/10 p-4">
               <div className="flex items-center justify-between gap-3">
                 <span
-                  className={`text-xs font-semibold ${selectedProduction.status === "running" || selectedProduction.status === "worker_shortage" ? "text-emerald-300" : selectedProduction.status === "missing_workers" ? "text-amber-300" : "text-red-300"}`}
+                  className={`text-xs font-semibold ${selectedProduction.status === "running" || selectedProduction.status === "worker_shortage" ? "text-emerald-300" : selectedProduction.status === "missing_workers" || selectedProduction.status === "paused" ? "text-amber-300" : "text-red-300"}`}
                 >
-                  {selectedProduction.status === "storage_full"
+                  {selectedProduction.status === "paused"
+                    ? "● Paused"
+                    : selectedProduction.status === "storage_full"
                     ? "● Storage full"
                     : selectedProduction.status === "missing_inputs"
                       ? "● Missing inputs"
@@ -1604,6 +1647,77 @@ export default function WorldMap({
               <p className="mt-2 text-xs leading-5 text-slate-300">
                 {selectedProduction.statusReason}
               </p>
+              {availableRecipes(selectedProduction.type).length > 1 && (
+                <fieldset className="mt-3 border-t border-white/10 pt-3">
+                  <legend className="text-[10px] uppercase tracking-[0.16em] text-slate-400">
+                    Recipe
+                  </legend>
+                  <div className="mt-2 space-y-2">
+                    {availableRecipes(selectedProduction.type).map((recipe) => {
+                      const [output, outputAmount] = Object.entries(
+                        recipe.outputs,
+                      )[0] as [Commodity, number];
+                      return (
+                        <label
+                          key={recipe.id}
+                          className="flex cursor-pointer items-start gap-2 rounded-md border border-white/10 bg-white/5 p-2 text-xs hover:bg-white/10"
+                        >
+                          <input
+                            type="radio"
+                            name={`recipe-${selectedProduction.buildingId}`}
+                            checked={selectedProduction.recipeId === recipe.id}
+                            disabled={productionBusy}
+                            onChange={() =>
+                              void setProductionRecipe(
+                                selectedProduction,
+                                recipe.id,
+                              )
+                            }
+                          />
+                          <span>
+                            <span className="block font-medium">
+                              {recipe.name}
+                            </span>
+                            <span className="mt-1 block text-[10px] text-slate-400">
+                              {Object.entries(recipe.consumableInputs).length
+                                ? `${materialSummary(recipe.consumableInputs)} → `
+                                : "Primitive → "}
+                              {outputAmount} {commodityDefinitions[output].name}
+                              {` · ${recipe.requiredWorkers} workers · ${recipe.durationMs / 1000}s`}
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </fieldset>
+              )}
+              <div className="mt-3 border-t border-white/10 pt-3">
+                <span className="text-[10px] uppercase tracking-[0.16em] text-slate-400">
+                  Input priority
+                </span>
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {productionPriorities.map((priority) => (
+                    <button
+                      key={priority}
+                      aria-pressed={selectedProduction.priority === priority}
+                      className={`${button} capitalize ${selectedProduction.priority === priority ? "border-sky-300/60 bg-sky-400/10 text-sky-100" : ""}`}
+                      disabled={productionBusy}
+                      onClick={() =>
+                        void setProductionPriority(
+                          selectedProduction,
+                          priority,
+                        )
+                      }
+                    >
+                      {priority}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                  Higher priority receives scarce warehouse inputs first. Labor remains manually assigned.
+                </p>
+              </div>
               <div className="mt-3 flex items-center justify-between text-xs">
                 <span className="text-slate-400">Workers</span>
                 <span>
@@ -1618,7 +1732,7 @@ export default function WorldMap({
                     ? Object.entries(selectedProduction.consumableInputs)
                         .map(
                           ([commodity, quantity]) =>
-                            `${quantity} ${commodityDefinitions[commodity as Commodity].name}`,
+                            `${quantity} ${commodityDefinitions[commodity as Commodity].name} (${production?.logistics.warehouseInventory[commodity as Commodity] ?? 0} stored)`,
                         )
                         .join(" + ")
                     : "None · primitive production"}
@@ -1632,12 +1746,13 @@ export default function WorldMap({
                 <button
                   className={`${button} flex-1`}
                   disabled={
-                    productionBusy || selectedProduction.assignedWorkers === 0
+                    productionBusy ||
+                    selectedProduction.paused ||
+                    selectedProduction.assignedWorkers === 0
                   }
                   onClick={() =>
-                    void updateProduction(
+                    void updateWorkers(
                       selectedProduction,
-                      "set_workers",
                       selectedProduction.assignedWorkers - 1,
                     )
                   }
@@ -1648,14 +1763,14 @@ export default function WorldMap({
                   className={`${button} flex-1`}
                   disabled={
                     productionBusy ||
+                    selectedProduction.paused ||
                     selectedProduction.assignedWorkers >=
                       selectedProduction.requiredWorkers ||
                     (production?.labor.unassignedWorkers ?? 0) === 0
                   }
                   onClick={() =>
-                    void updateProduction(
+                    void updateWorkers(
                       selectedProduction,
-                      "set_workers",
                       selectedProduction.assignedWorkers + 1,
                     )
                   }
@@ -1665,22 +1780,31 @@ export default function WorldMap({
               </div>
               <button
                 className={`${button} mt-2 w-full`}
-                disabled={
-                  productionBusy || selectedProduction.assignedWorkers === 0
-                }
+                disabled={productionBusy}
                 onClick={() =>
-                  void updateProduction(selectedProduction, "set_workers", 0)
+                  void setProductionPaused(
+                    selectedProduction,
+                    !selectedProduction.paused,
+                  )
                 }
               >
-                Pause production · release workers
+                {selectedProduction.paused
+                  ? "Resume production"
+                  : "Pause production · release workers"}
               </button>
               <div className="mt-4 flex items-center justify-between text-xs">
-                <span className="text-slate-400">Output</span>
+                <span className="text-slate-400">Expected output</span>
                 <span>
-                  +{selectedProduction.outputAmount} /{" "}
+                  +{selectedProduction.expectedOutputPerCycle.toFixed(1)} /{" "}
                   {selectedProduction.cycleMs / 1000}s
                 </span>
               </div>
+              {selectedProduction.stored >=
+                selectedProduction.storageCapacity * 0.8 && (
+                <p className="mt-2 text-xs text-amber-200">
+                  Production warning: local storage is nearly full.
+                </p>
+              )}
               <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
                 <div
                   className={`h-full transition-[width] ${selectedProduction.status === "running" || selectedProduction.status === "worker_shortage" ? "bg-emerald-400" : "bg-slate-600"}`}
@@ -1701,7 +1825,7 @@ export default function WorldMap({
                 className={`${button} mt-3 w-full`}
                 disabled={productionBusy || selectedProduction.stored === 0}
                 onClick={() =>
-                  void updateProduction(selectedProduction, "collect")
+                  void dispatchProduction(selectedProduction)
                 }
               >
                 Dispatch to warehouse

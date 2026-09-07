@@ -204,6 +204,18 @@ For labor verification, inspect the starting workforce of 6 with 5 assigned and 
 
 For dependency verification, wait for the opening Crop shipment to reach the Warehouse, release the Quarry workers, and assign two workers to the Workshop. After six simulated seconds, confirm the Workshop holds three Basic Food and Warehouse Crops fell from four to two. Leave the Workshop staffed after its Crops run out and confirm it reports Missing inputs without gaining progress or output.
 
+## Milestone 16: labor and production player control
+
+- Production inspection now sends authoritative commands to assign and remove workers, pause and resume a producer, choose an available recipe, and set its production priority. React keeps only the returned read model and never edits labor or production state directly.
+- Pausing a producer releases all of its workers immediately while preserving completed cycle progress. Resuming leaves it unstaffed so the player decides where finite labor goes next.
+- Recipe controls appear only for producers with real alternatives. Farms can switch between Crops and Livestock, and Workshops expose their supported processing recipes. A switch is rejected when the current local output has not been dispatched, when the selected recipe belongs to another producer, or when the current assignment exceeds the new recipe's worker requirement.
+- Low, Normal, and High priority determine which producer resolves first when multiple sites compete for scarce shared warehouse inputs at the same simulation time. Building ID remains the deterministic tie-breaker. Priority never assigns labor or changes recipes automatically.
+- Production inspection reports assigned and required workers, labor efficiency, expected output for the current staffing and status, warehouse input stock, local output storage, progress, and the exact blocking reason. Storage at 80% or more receives a visible warning.
+- Version 1 saves preserve the active recipe, explicit pause state, production priority, worker allocation, cycle progress, and deterministic labor remainder. Older saves default to active production and Normal priority.
+- Players can now overbuild, understaff a site, concentrate labor in one industry, starve another producer, exhaust an intermediate input, fill local storage, pause a critical link, and recover by changing those choices. No automatic optimizer corrects these outcomes.
+
+For the playable gate, build two Farms and distribute the finite workforce unevenly. Accelerate time and compare their expected output and inventories, move labor between them, then pause one Farm and assign its released workers to another producer. Change a Farm or Workshop recipe when its local output is empty, use production priority to choose which Workshop receives scarce shared inputs first, and deliberately create then resolve a labor or input bottleneck. Reload the page and confirm all accepted controls survive.
+
 ## Run and verify
 
 ```bash

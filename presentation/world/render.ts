@@ -265,7 +265,7 @@ export function drawWorld(
         ctx.fillStyle =
           site.status === "running" || site.status === "worker_shortage"
             ? "#4ade80"
-            : site.status === "missing_workers"
+            : site.status === "missing_workers" || site.status === "paused"
               ? "#fbbf24"
               : "#f87171";
         ctx.fill();

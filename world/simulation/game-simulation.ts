@@ -24,9 +24,12 @@ import {
   type ShortageLevel,
 } from "../domain/market";
 import {
+  availableRecipes,
+  compareProductionPriority,
   defaultRecipeByProducer,
   describeProduction,
   isProducerType,
+  isProductionPriority,
   isRecipeId,
   productionRecipes,
   recipeForState,
@@ -37,6 +40,8 @@ import {
   type ProductionSnapshot,
   type ProductionState,
   type ProducerType,
+  type ProductionPriority,
+  type RecipeId,
 } from "../domain/production";
 import {
   commodityIds,
@@ -44,10 +49,7 @@ import {
   normalizeCommodityInventory,
 } from "../domain/commodities";
 import { describePopulation } from "../domain/population";
-import {
-  describeLabor,
-  validateLaborAssignment,
-} from "../domain/labor";
+import { describeLabor, validateLaborAssignment } from "../domain/labor";
 import {
   buildingDefinitions,
   withStartingSettlement,
@@ -65,6 +67,21 @@ export type GameCommand =
       type: "set_workers";
       buildingId: string;
       workers: number;
+    }>
+  | Readonly<{
+      type: "set_production_paused";
+      buildingId: string;
+      paused: boolean;
+    }>
+  | Readonly<{
+      type: "set_recipe";
+      buildingId: string;
+      recipeId: RecipeId;
+    }>
+  | Readonly<{
+      type: "set_production_priority";
+      buildingId: string;
+      priority: ProductionPriority;
     }>
   | Readonly<{ type: "dispatch_production"; buildingId: string }>
   | Readonly<{
@@ -192,7 +209,8 @@ function isLocalSimulationSaveV1(
     if (
       (inventory[commodity] !== undefined &&
         !isNonnegativeInteger(inventory[commodity])) ||
-      (history[commodity] !== undefined && !Array.isArray(history[commodity])) ||
+      (history[commodity] !== undefined &&
+        !Array.isArray(history[commodity])) ||
       (shortages[commodity] !== undefined &&
         !["none", "low", "critical"].includes(shortages[commodity] as string))
     )
@@ -203,7 +221,11 @@ function isLocalSimulationSaveV1(
       isRecord(state) &&
       typeof state.buildingId === "string" &&
       (state.recipeId === undefined || isRecipeId(state.recipeId)) &&
+      (state.paused === undefined || typeof state.paused === "boolean") &&
+      (state.priority === undefined ||
+        isProductionPriority(state.priority)) &&
       isNonnegativeInteger(state.assignedWorkers) &&
+      (!state.paused || state.assignedWorkers === 0) &&
       isNonnegativeInteger(state.stored) &&
       isNonnegativeInteger(state.progressMs) &&
       (state.laborRemainder === undefined ||
@@ -281,11 +303,11 @@ export class LocalGameSimulation {
         this.state.productionStates.set(building.id, {
           buildingId: building.id,
           recipeId: selected.id,
+          paused: existing?.paused ?? false,
+          priority: existing?.priority ?? "normal",
           assignedWorkers: existing?.assignedWorkers ?? 0,
           stored: migratesLegacyFarmState ? 0 : (existing?.stored ?? 0),
-          progressMs: migratesLegacyFarmState
-            ? 0
-            : (existing?.progressMs ?? 0),
+          progressMs: migratesLegacyFarmState ? 0 : (existing?.progressMs ?? 0),
           laborRemainder: migratesLegacyFarmState
             ? 0
             : (existing?.laborRemainder ?? 0),
@@ -358,12 +380,13 @@ export class LocalGameSimulation {
             {
               buildingId: building.id,
               recipeId: selected.id,
+              paused: false,
+              priority: "normal",
               assignedWorkers:
                 building.type === "farm" || building.type === "quarry"
                   ? selected.requiredWorkers
                   : 0,
-              stored:
-                building.type === "quarry" ? selected.storageCapacity : 0,
+              stored: building.type === "quarry" ? selected.storageCapacity : 0,
               progressMs: 0,
               laborRemainder: 0,
               updatedAt: startTime,
@@ -443,6 +466,15 @@ export class LocalGameSimulation {
         return this.construct(command);
       case "set_workers":
         return this.setWorkers(command.buildingId, command.workers);
+      case "set_production_paused":
+        return this.setProductionPaused(command.buildingId, command.paused);
+      case "set_recipe":
+        return this.setRecipe(command.buildingId, command.recipeId);
+      case "set_production_priority":
+        return this.setProductionPriority(
+          command.buildingId,
+          command.priority,
+        );
       case "dispatch_production":
         return this.dispatchProduction(command.buildingId);
       case "sell_goods":
@@ -497,8 +529,7 @@ export class LocalGameSimulation {
           shipment.arrivalTime <= simulationTime,
       )
       .sort(
-        (a, b) =>
-          a.arrivalTime - b.arrivalTime || a.id.localeCompare(b.id),
+        (a, b) => a.arrivalTime - b.arrivalTime || a.id.localeCompare(b.id),
       );
     let arrivalIndex = 0;
     while (arrivalIndex < arrivals.length) {
@@ -541,7 +572,10 @@ export class LocalGameSimulation {
 
   private advanceProducersTo(simulationTime: number) {
     for (const building of [...this.producers].sort((a, b) =>
-      a.id.localeCompare(b.id),
+      compareProductionPriority(
+        this.state.productionStates.get(a.id) ?? { buildingId: a.id },
+        this.state.productionStates.get(b.id) ?? { buildingId: b.id },
+      ),
     )) {
       const state = this.state.productionStates.get(building.id);
       if (!state) continue;
@@ -560,7 +594,10 @@ export class LocalGameSimulation {
     command: Extract<GameCommand, { type: "construct" }>,
   ): CommandResult {
     if (command.expectedRevision !== this.state.revision)
-      return this.failure(409, "Simulation changed. Review the latest world state.");
+      return this.failure(
+        409,
+        "Simulation changed. Review the latest world state.",
+      );
     const validation = validatePlacement(this.state.world, command.placement);
     if (!validation.valid)
       return this.failure(422, validation.reasons.join(". "));
@@ -609,6 +646,8 @@ export class LocalGameSimulation {
       this.state.productionStates.set(building.id, {
         buildingId: building.id,
         recipeId: selected.id,
+        paused: false,
+        priority: "normal",
         assignedWorkers: 0,
         stored: 0,
         progressMs: 0,
@@ -640,7 +679,10 @@ export class LocalGameSimulation {
     );
     if (!building) return this.failure(404, "Building was not found.");
     if (building.type === "camp")
-      return this.failure(422, "The settlement's founding camp cannot be demolished.");
+      return this.failure(
+        422,
+        "The settlement's founding camp cannot be demolished.",
+      );
     if (building.type === "warehouse" && building.id === this.warehouse?.id)
       return this.failure(422, "The primary warehouse cannot be demolished.");
     if (
@@ -689,9 +731,11 @@ export class LocalGameSimulation {
       return this.failure(404, "Production site was not found.");
     const selected = recipeForState(state, building.type);
     if (!Number.isInteger(workers) || workers < 0)
+      return this.failure(422, "Workers must be a nonnegative integer.");
+    if (state.paused && workers > 0)
       return this.failure(
         422,
-        "Workers must be a nonnegative integer.",
+        "Resume production before assigning workers to this building.",
       );
     const assignedElsewhere = [...this.state.productionStates.values()].reduce(
       (total, candidate) =>
@@ -722,21 +766,115 @@ export class LocalGameSimulation {
       workers === selected.requiredWorkers
         ? `${buildingDefinitions[building.type].name} staffed ${selected.name}.`
         : workers === 0
-          ? `${buildingDefinitions[building.type].name} paused and released its workers.`
+          ? `${buildingDefinitions[building.type].name} released its workers.`
           : `${buildingDefinitions[building.type].name} has a worker shortage at ${workers}/${selected.requiredWorkers}.`,
+    );
+    return this.success();
+  }
+
+  private setProductionPaused(
+    buildingId: string,
+    paused: boolean,
+  ): CommandResult {
+    const building = this.producers.find(
+      (candidate) => candidate.id === buildingId,
+    );
+    const state = this.state.productionStates.get(buildingId);
+    if (!building || !state)
+      return this.failure(404, "Production site was not found.");
+    if (typeof paused !== "boolean")
+      return this.failure(400, "Paused state must be a boolean.");
+    if ((state.paused ?? false) === paused) return this.success();
+    const releasedWorkers = paused ? state.assignedWorkers : 0;
+    this.state.productionStates.set(buildingId, {
+      ...state,
+      paused,
+      assignedWorkers: paused ? 0 : state.assignedWorkers,
+      updatedAt: this.state.simulationTime,
+    });
+    this.addEvent(
+      this.state.simulationTime,
+      "production",
+      paused
+        ? `${buildingDefinitions[building.type].name} paused${releasedWorkers ? ` and released ${releasedWorkers} worker${releasedWorkers === 1 ? "" : "s"}` : ""}.`
+        : `${buildingDefinitions[building.type].name} resumed and is ready for workers.`,
+    );
+    return this.success();
+  }
+
+  private setRecipe(buildingId: string, recipeId: RecipeId): CommandResult {
+    const building = this.producers.find(
+      (candidate) => candidate.id === buildingId,
+    );
+    const state = this.state.productionStates.get(buildingId);
+    if (!building || !state)
+      return this.failure(404, "Production site was not found.");
+    if (!isRecipeId(recipeId))
+      return this.failure(400, "Production recipe is invalid.");
+    const choices = availableRecipes(building.type);
+    if (choices.length <= 1)
+      return this.failure(422, "This building has no alternate recipes.");
+    const selected = choices.find((candidate) => candidate.id === recipeId);
+    if (!selected)
+      return this.failure(422, "This recipe cannot run in this building.");
+    if (recipeForState(state, building.type).id === selected.id)
+      return this.success();
+    if (state.stored > 0)
+      return this.failure(
+        422,
+        "Dispatch the current output before changing recipes.",
+      );
+    if (state.assignedWorkers > selected.requiredWorkers)
+      return this.failure(
+        422,
+        `Reduce this building to ${selected.requiredWorkers} workers before selecting ${selected.name}.`,
+      );
+    this.state.productionStates.set(buildingId, {
+      ...state,
+      recipeId: selected.id,
+      progressMs: 0,
+      laborRemainder: 0,
+      updatedAt: this.state.simulationTime,
+    });
+    this.addEvent(
+      this.state.simulationTime,
+      "production",
+      `${buildingDefinitions[building.type].name} selected ${selected.name}.`,
+    );
+    return this.success();
+  }
+
+  private setProductionPriority(
+    buildingId: string,
+    priority: ProductionPriority,
+  ): CommandResult {
+    const building = this.producers.find(
+      (candidate) => candidate.id === buildingId,
+    );
+    const state = this.state.productionStates.get(buildingId);
+    if (!building || !state)
+      return this.failure(404, "Production site was not found.");
+    if (!isProductionPriority(priority))
+      return this.failure(400, "Production priority is invalid.");
+    if ((state.priority ?? "normal") === priority) return this.success();
+    this.state.productionStates.set(buildingId, {
+      ...state,
+      priority,
+      updatedAt: this.state.simulationTime,
+    });
+    this.addEvent(
+      this.state.simulationTime,
+      "production",
+      `${buildingDefinitions[building.type].name} priority set to ${priority}.`,
     );
     return this.success();
   }
 
   private dispatchProduction(buildingId: string): CommandResult {
     const state = this.state.productionStates.get(buildingId);
-    if (!state)
-      return this.failure(404, "Production site was not found.");
+    if (!state) return this.failure(404, "Production site was not found.");
     if (state.stored === 0)
-      return this.failure(
-        422,
-        "This production site has no output to ship.",
-      );
+      return this.failure(422, "This production site has no output to ship.");
     const building = this.producers.find(
       (candidate) => candidate.id === buildingId,
     );
@@ -966,10 +1104,7 @@ export class LocalGameSimulation {
     return { ok: true, status: 200, readModel: this.readModel() };
   }
 
-  private failure(
-    status: 400 | 404 | 409 | 422,
-    error: string,
-  ): CommandResult {
+  private failure(status: 400 | 404 | 409 | 422, error: string): CommandResult {
     return { ok: false, status, error, readModel: this.readModel() };
   }
 }

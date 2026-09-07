@@ -1257,6 +1257,316 @@ test("local simulation connects crop inputs to Basic Food and preserves the allo
   assert.deepEqual(direct.candidate.exportSave(), partitioned.candidate.exportSave());
 });
 
+test("player commands pause, resume, reassign labor, change recipes, and persist control state", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const initial = simulation.read(1_000).economy;
+  const farm = initial.sites.find((site) => site.type === "farm");
+  const lumber = initial.sites.find((site) => site.type === "lumber_camp");
+  const quarry = initial.sites.find((site) => site.type === "quarry");
+  const workshop = initial.sites.find((site) => site.type === "workshop");
+
+  const paused = simulation.execute(
+    {
+      type: "set_production_paused",
+      buildingId: farm.buildingId,
+      paused: true,
+    },
+    5_000,
+  );
+  assert.equal(paused.ok, true);
+  const pausedFarm = paused.readModel.economy.sites.find(
+    (site) => site.buildingId === farm.buildingId,
+  );
+  assert.equal(pausedFarm.status, "paused");
+  assert.equal(pausedFarm.assignedWorkers, 0);
+  assert.equal(pausedFarm.expectedOutputPerCycle, 0);
+  assert.equal(paused.readModel.economy.labor.unassignedWorkers, 3);
+
+  const pausedLoaded = LocalGameSimulation.fromSave(
+    JSON.parse(JSON.stringify(simulation.exportSave())),
+  ).read(5_000).economy;
+  assert.equal(
+    pausedLoaded.sites.find((site) => site.buildingId === farm.buildingId)
+      .paused,
+    true,
+  );
+
+  const frozenProgress = pausedFarm.progressMs;
+  assert.equal(
+    simulation.read(20_000).economy.sites.find(
+      (site) => site.buildingId === farm.buildingId,
+    ).progressMs,
+    frozenProgress,
+  );
+  assert.equal(
+    simulation.execute(
+      { type: "set_workers", buildingId: farm.buildingId, workers: 1 },
+      20_000,
+    ).status,
+    422,
+  );
+  assert.equal(
+    simulation.execute(
+      { type: "set_workers", buildingId: lumber.buildingId, workers: 2 },
+      20_000,
+    ).ok,
+    true,
+  );
+  const resumed = simulation.execute(
+    {
+      type: "set_production_paused",
+      buildingId: farm.buildingId,
+      paused: false,
+    },
+    20_000,
+  );
+  assert.equal(resumed.ok, true);
+  assert.equal(
+    resumed.readModel.economy.sites.find(
+      (site) => site.buildingId === farm.buildingId,
+    ).assignedWorkers,
+    0,
+  );
+  assert.equal(
+    simulation.execute(
+      { type: "set_workers", buildingId: farm.buildingId, workers: 2 },
+      20_000,
+    ).status,
+    422,
+  );
+  simulation.execute(
+    { type: "set_workers", buildingId: lumber.buildingId, workers: 0 },
+    20_000,
+  );
+  assert.equal(
+    simulation.execute(
+      { type: "set_workers", buildingId: farm.buildingId, workers: 2 },
+      20_000,
+    ).ok,
+    true,
+  );
+  assert.equal(
+    simulation.read(24_000).economy.sites.find(
+      (site) => site.buildingId === farm.buildingId,
+    ).stored,
+    4,
+  );
+  const blockedByStoredOutput = simulation.execute(
+    {
+      type: "set_recipe",
+      buildingId: farm.buildingId,
+      recipeId: "raise_livestock",
+    },
+    24_000,
+  );
+  assert.equal(blockedByStoredOutput.status, 422);
+  assert.match(blockedByStoredOutput.error, /Dispatch the current output/);
+
+  assert.equal(
+    simulation.execute(
+      {
+        type: "set_recipe",
+        buildingId: workshop.buildingId,
+        recipeId: "saw_lumber",
+      },
+      24_000,
+    ).ok,
+    true,
+  );
+  simulation.execute(
+    { type: "set_workers", buildingId: quarry.buildingId, workers: 0 },
+    24_000,
+  );
+  simulation.execute(
+    { type: "set_workers", buildingId: workshop.buildingId, workers: 2 },
+    24_000,
+  );
+  const tooManyForRecipe = simulation.execute(
+    {
+      type: "set_recipe",
+      buildingId: workshop.buildingId,
+      recipeId: "make_animal_feed",
+    },
+    24_000,
+  );
+  assert.equal(tooManyForRecipe.status, 422);
+  assert.match(tooManyForRecipe.error, /Reduce this building to 1 worker/);
+  simulation.execute(
+    { type: "set_workers", buildingId: workshop.buildingId, workers: 1 },
+    24_000,
+  );
+  assert.equal(
+    simulation.execute(
+      {
+        type: "set_recipe",
+        buildingId: workshop.buildingId,
+        recipeId: "make_animal_feed",
+      },
+      24_000,
+    ).ok,
+    true,
+  );
+  assert.equal(
+    simulation.execute(
+      {
+        type: "set_recipe",
+        buildingId: lumber.buildingId,
+        recipeId: "saw_lumber",
+      },
+      24_000,
+    ).status,
+    422,
+  );
+  assert.equal(
+    simulation.execute(
+      {
+        type: "set_production_priority",
+        buildingId: workshop.buildingId,
+        priority: "high",
+      },
+      24_000,
+    ).ok,
+    true,
+  );
+  const loaded = LocalGameSimulation.fromSave(
+    JSON.parse(JSON.stringify(simulation.exportSave())),
+  ).read(24_000).economy;
+  const loadedWorkshop = loaded.sites.find(
+    (site) => site.buildingId === workshop.buildingId,
+  );
+  assert.equal(loadedWorkshop.recipeId, "make_animal_feed");
+  assert.equal(loadedWorkshop.priority, "high");
+  assert.equal(loadedWorkshop.assignedWorkers, 1);
+});
+
+test("player production priority decides which workshop receives scarce inputs", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const { validatePlacement } = require("../world/domain/construction.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const initial = simulation.read(1_000).economy;
+  const quarry = initial.sites.find((site) => site.type === "quarry");
+  const firstWorkshop = initial.sites.find((site) => site.type === "workshop");
+  const stoneShipment = simulation.execute(
+    { type: "dispatch_production", buildingId: quarry.buildingId },
+    1_000,
+  ).shipment;
+  const cropShipment = initial.logistics.shipments.find(
+    (shipment) => shipment.cargo.commodity === "crops",
+  );
+  const readyAt = Math.max(stoneShipment.arrivalTime, cropShipment.arrivalTime);
+  const ready = simulation.read(readyAt);
+  const placementCell = ready.world.cells.find((cell) =>
+    validatePlacement(ready.world, {
+      type: "workshop",
+      x: cell.x,
+      y: cell.y,
+      rotation: "north",
+    }).valid,
+  );
+  const constructed = simulation.execute(
+    {
+      type: "construct",
+      expectedRevision: ready.revision,
+      placement: {
+        type: "workshop",
+        x: placementCell.x,
+        y: placementCell.y,
+        rotation: "north",
+      },
+    },
+    readyAt,
+  );
+  assert.equal(constructed.ok, true);
+  const secondWorkshop = constructed.readModel.economy.sites.find(
+    (site) => site.buildingId === constructed.building.id,
+  );
+  const crops = constructed.readModel.economy.market.listings.find(
+    (listing) => listing.commodity === "crops",
+  );
+  assert.equal(
+    simulation.execute(
+      {
+        type: "sell_goods",
+        commodity: "crops",
+        quantity: 2,
+        expectedPriceCents: crops.priceCents,
+      },
+      readyAt,
+    ).ok,
+    true,
+  );
+  const farm = initial.sites.find((site) => site.type === "farm");
+  simulation.execute(
+    {
+      type: "set_production_paused",
+      buildingId: farm.buildingId,
+      paused: true,
+    },
+    readyAt,
+  );
+  simulation.execute(
+    {
+      type: "set_production_paused",
+      buildingId: quarry.buildingId,
+      paused: true,
+    },
+    readyAt,
+  );
+  simulation.execute(
+    { type: "set_workers", buildingId: firstWorkshop.buildingId, workers: 2 },
+    readyAt,
+  );
+  simulation.execute(
+    { type: "set_workers", buildingId: secondWorkshop.buildingId, workers: 2 },
+    readyAt,
+  );
+  simulation.execute(
+    {
+      type: "set_production_priority",
+      buildingId: firstWorkshop.buildingId,
+      priority: "low",
+    },
+    readyAt,
+  );
+  simulation.execute(
+    {
+      type: "set_production_priority",
+      buildingId: secondWorkshop.buildingId,
+      priority: "high",
+    },
+    readyAt,
+  );
+  const resolved = simulation.read(readyAt + 6_000).economy;
+  assert.equal(
+    resolved.sites.find(
+      (site) => site.buildingId === secondWorkshop.buildingId,
+    ).stored,
+    3,
+  );
+  const starved = resolved.sites.find(
+    (site) => site.buildingId === firstWorkshop.buildingId,
+  );
+  assert.equal(starved.stored, 0);
+  assert.equal(starved.status, "missing_inputs");
+  assert.equal(resolved.logistics.warehouseInventory.crops, 0);
+  const loaded = LocalGameSimulation.fromSave(
+    JSON.parse(JSON.stringify(simulation.exportSave())),
+  ).read(readyAt + 6_000).economy;
+  assert.equal(
+    loaded.sites.find(
+      (site) => site.buildingId === secondWorkshop.buildingId,
+    ).priority,
+    "high",
+  );
+});
+
 test("local authority is deterministic, monotonic, and exports versioned state", () => {
   const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
   const first = new LocalGameSimulation(createStartingWorld(), 5_000);
