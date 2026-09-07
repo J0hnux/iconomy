@@ -343,6 +343,7 @@ export function BottomHud({
   snapshot,
   scene,
   onBuild,
+  onRoad,
   onMarket,
   onMarketTerminal,
   onCompany,
@@ -357,6 +358,7 @@ export function BottomHud({
     buildings: number;
   };
   onBuild: () => void;
+  onRoad: () => void;
   onMarket: () => void;
   onMarketTerminal: () => void;
   onCompany: () => void;
@@ -485,6 +487,7 @@ export function BottomHud({
         <div className="grid grid-cols-3 gap-2">
           {[
             ["Build", onBuild],
+            ["Road", onRoad],
             ["Trade", onMarket],
             ["Market", onMarketTerminal],
             ["Company", onCompany],

@@ -35,6 +35,12 @@ export const constructionCosts = {
   workshop: { cashCents: 25_000, materials: { wood: 1, stone: 1 } },
 } as const satisfies Record<ConstructibleBuildingType, ConstructionCost>;
 
+/** Roads are primitive infrastructure, so they can bootstrap without materials. */
+export const roadConstructionCost: ConstructionCost = {
+  cashCents: 500,
+  materials: {},
+};
+
 export type ConstructionResourceValidation = Readonly<{
   affordable: boolean;
   reasons: readonly string[];
@@ -53,7 +59,25 @@ export function validateConstructionResources(
 ): ConstructionResourceValidation {
   if (!isConstructibleBuildingType(type))
     return { affordable: false, reasons: ["Building type is unavailable"] };
-  const cost = constructionCosts[type];
+  return validateConstructionCost(
+    constructionCosts[type],
+    cashCents,
+    inventory,
+  );
+}
+
+export function validateRoadConstructionResources(
+  cashCents: number,
+  inventory: Readonly<Record<Commodity, number>>,
+): ConstructionResourceValidation {
+  return validateConstructionCost(roadConstructionCost, cashCents, inventory);
+}
+
+function validateConstructionCost(
+  cost: ConstructionCost,
+  cashCents: number,
+  inventory: Readonly<Record<Commodity, number>>,
+): ConstructionResourceValidation {
   const reasons: string[] = [];
   if (cashCents < cost.cashCents) {
     const missing = cost.cashCents - cashCents;
@@ -74,6 +98,11 @@ export type PlacementRequest = Readonly<{
   x: number;
   y: number;
   rotation: BuildingRotation;
+}>;
+
+export type RoadPlacementRequest = Readonly<{
+  x: number;
+  y: number;
 }>;
 
 export type PlacementValidation = Readonly<{
@@ -200,6 +229,56 @@ export function validatePlacement(
   };
 }
 
+export function validateRoadPlacement(
+  world: WorldSnapshot,
+  request: RoadPlacementRequest,
+): PlacementValidation {
+  const reasons: string[] = [];
+  if (!Number.isInteger(request.x) || !Number.isInteger(request.y)) {
+    return {
+      valid: false,
+      reasons: ["Road must use a grid cell"],
+      cells: [],
+      elevation: null,
+    };
+  }
+  if (
+    request.x < 0 ||
+    request.y < 0 ||
+    request.x >= world.size ||
+    request.y >= world.size
+  ) {
+    return {
+      valid: false,
+      reasons: ["Road must be inside the world"],
+      cells: [],
+      elevation: null,
+    };
+  }
+  const cell = world.cells[request.y * world.size + request.x];
+  if (cell.terrain === "water") reasons.push("Road requires dry ground");
+  if (buildingAt(world, request.x, request.y))
+    reasons.push("Cell is occupied by a building");
+  const roads = new Set(
+    (world.roads ?? []).map((road) => `${road.x},${road.y}`),
+  );
+  if (roads.has(`${request.x},${request.y}`))
+    reasons.push("A road already occupies this cell");
+  const connected = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ].some(([dx, dy]) => roads.has(`${request.x + dx},${request.y + dy}`));
+  if (!connected) reasons.push("Road must connect to an adjacent road");
+  return {
+    valid: reasons.length === 0,
+    reasons,
+    cells: [cell],
+    elevation: cell.z,
+  };
+}
+
 export function placeBuilding(
   world: WorldSnapshot,
   request: PlacementRequest,
@@ -218,4 +297,19 @@ export function placeBuilding(
     settlementId: world.settlement.id,
   };
   return { ...world, buildings: [...(world.buildings ?? []), building] };
+}
+
+export function placeRoad(
+  world: WorldSnapshot,
+  request: RoadPlacementRequest,
+): WorldSnapshot {
+  const validation = validateRoadPlacement(world, request);
+  if (!validation.valid || validation.elevation === null) return world;
+  return {
+    ...world,
+    roads: [
+      ...(world.roads ?? []),
+      { x: request.x, y: request.y, z: validation.elevation },
+    ],
+  };
 }

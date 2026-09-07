@@ -83,7 +83,7 @@ The automated tests include footprint validity, unchanged terrain, road connecti
 - A simulation-confirmed arrival adds cargo to the Novagrad warehouse inventory and produces a short arrival ring at the destination. The logistics panel lists recent shipments, their routes, cargo, and In transit or Arrived state.
 - The warehouse inspector exposes spatial inventory for food, wood, and stone. Collecting at a producer now means dispatching goods rather than moving them into a global inventory immediately.
 - A demonstration food shipment starts in transit so the logistics layer is visible immediately. Further Farm, Lumber Camp, and Quarry shipments use their route's distance-based travel duration.
-- Logistics state remains in browser memory for this prototype. Vehicle capacity, congestion, transport costs, persistent inventory, and route construction tools remain future work.
+- Vehicle capacity, congestion, and road upgrades remain future work. Players can extend the local road network through the authoritative construction workflow described below.
 
 `world/domain/logistics.ts` owns road connections, deterministic route generation, shipment types, and route interpolation. The production session store owns shipment departures, authoritative arrivals, and warehouse inventory transitions. Canvas animation consumes those snapshots without changing them.
 
@@ -167,7 +167,7 @@ For population verification, open the player or economy HUD and confirm 10 total
 - Pause, 1×, 2×, and 5× controls advance the same explicit deterministic simulation clock independently of Canvas frame rate. Commands continue to work at the current simulation time while paused.
 - Version 1 saves can now be validated and restored. The browser automatically stores the authoritative save in localStorage after simulation updates and resumes from saved simulation time without offline progression.
 - Player feedback reports construction costs, affordability gaps, physical placement failures, production state, demolition, inventory, credits, and economy events without requiring developer tools.
-- Player-built Warehouses provide another map location from which to inspect the settlement's existing shared inventory. Aggregate warehouse capacity and player-built roads remain future work because neither system had an authoritative Milestone 12 model.
+- Player-built Warehouses provide another map location from which to inspect the settlement's existing shared inventory. Aggregate warehouse capacity remains future work.
 
 Milestone 13 does not add commodities, recipes, NPC actors, migration, consumption, wages, banking, contracts, technology, or regional markets.
 
@@ -414,6 +414,16 @@ For verification, watch a Farm reach full storage and stall under Manual. Set it
 
 For verification, read the standing in the player panel: a new settlement is a Hamlet needing two more citizens for Village. Give its Farm a standing delivery order, and once food supply holds at full the settlement becomes a Village with five named requirements listed toward Town. Build houses and staff another industry to close them. Then set the Farm back to manual delivery, let the settlement starve, and watch the standing fall back with the failed requirements named.
 
+## Player-built roads
+
+- Choose **Road** from the bottom actions or **Roads** in the World tool to enter road construction mode. Hovering the map shows a green or red single-cell preview with the validation reason.
+- Each road cell costs $5.00. It must occupy dry, empty terrain and share a cardinal edge with the existing road network. Roads cannot overlap buildings or other roads.
+- A `construct_road` command repeats placement, affordability, and revision validation in the local simulation before atomically deducting cash and appending the cell's existing x/y/z position to the world snapshot.
+- Existing road rendering automatically derives straight segments, corners, and junctions from neighboring cells. New road cells immediately provide access for later building placement without putting authority in Canvas or React.
+- Road coordinates are part of the existing version 1 world save, so new roads survive save/load without a schema migration. Existing shipment route snapshots remain unchanged while cargo is in transit.
+
+`world/domain/construction.ts` owns road cost and pure placement rules. `world/simulation/game-simulation.ts` owns acceptance, payment, revision changes, and events. The presentation reuses the established construction preview and road renderer.
+
 ## Run and verify
 
 ```bash
@@ -427,6 +437,8 @@ npm run build
 Open http://localhost:3000. Drag the map, zoom at a river tile, select it, and verify selection remains attached when panning, zooming, or resizing. Dragging must not select a new tile. Check keyboard controls and focus-selected behavior. Select a mountain tile and confirm z is greater than zero; click an exposed cliff and verify its owning tile is selected.
 
 For construction, choose Build, select a building, and move beside a road. Confirm valid cells turn green and invalid cells turn red with a reason. Rotate the Workshop and verify its footprint changes between 2×1 and 1×2. Click a valid preview and verify the building count increases only after the local simulation accepts it. Try the same footprint again and verify it is rejected as occupied.
+
+For roads, choose Road, hover a dry empty cell beside the existing network, and confirm the preview turns green. Build several connected cells and verify each costs $5.00, forms the correct visual junction, and makes adjacent land available to the building tool. Try water, a building footprint, an existing road, and a disconnected cell and verify each is rejected without charging cash.
 
 For production, open each site from the Production panel. Confirm the Farm advances, the Lumber Camp explains that it needs two workers, and the Quarry explains that its storage is full. Add two Lumber Camp workers and watch its simulation progress increase. Dispatch the Quarry output and confirm it changes to Running.
 

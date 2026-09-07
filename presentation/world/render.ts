@@ -2,6 +2,7 @@ import { buildingAt } from "../../world/domain/settlement";
 import type {
   PlacementRequest,
   PlacementValidation,
+  RoadPlacementRequest,
 } from "../../world/domain/construction";
 import {
   buildingFaces,
@@ -32,7 +33,7 @@ const water = ["#28667d", "#2b6d83", "#2c7187", "#306d82", "#296a81"];
 const rock = ["#89918b", "#92988f", "#838d88", "#9ba098", "#8e9791"];
 
 export type PlacementPreview = Readonly<{
-  request: PlacementRequest;
+  request: PlacementRequest | RoadPlacementRequest;
   validation: PlacementValidation;
 }>;
 

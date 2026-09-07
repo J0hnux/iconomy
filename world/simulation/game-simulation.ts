@@ -2,10 +2,15 @@ import {
   constructionCosts,
   isConstructibleBuildingType,
   placeBuilding,
+  placeRoad,
+  roadConstructionCost,
   validateConstructionResources,
   validatePlacement,
+  validateRoadConstructionResources,
+  validateRoadPlacement,
   type ConstructionCost,
   type PlacementRequest,
+  type RoadPlacementRequest,
 } from "../domain/construction";
 import {
   connectProducerToWarehouse,
@@ -124,13 +129,22 @@ import {
   withStartingSettlement,
   type Building,
 } from "../domain/settlement";
-import { generateWorld, type WorldSnapshot } from "../domain/world";
+import {
+  generateWorld,
+  type WorldPosition,
+  type WorldSnapshot,
+} from "../domain/world";
 
 export type GameCommand =
   | Readonly<{
       type: "construct";
       expectedRevision: number;
       placement: PlacementRequest;
+    }>
+  | Readonly<{
+      type: "construct_road";
+      expectedRevision: number;
+      placement: RoadPlacementRequest;
     }>
   | Readonly<{
       type: "set_workers";
@@ -202,6 +216,7 @@ export type CommandResult =
       status: 200 | 201;
       readModel: GameReadModel;
       building?: Building;
+      road?: WorldPosition;
       collected?: number;
       shipment?: Shipment;
       revenueCents?: number;
@@ -768,6 +783,8 @@ export class LocalGameSimulation {
     switch (command.type) {
       case "construct":
         return this.construct(command);
+      case "construct_road":
+        return this.constructRoad(command);
       case "set_workers":
         return this.setWorkers(command.buildingId, command.workers);
       case "set_production_paused":
@@ -1203,6 +1220,46 @@ export class LocalGameSimulation {
       status: 201,
       building,
       constructionCost: cost,
+      readModel: this.readModel(),
+    };
+  }
+
+  private constructRoad(
+    command: Extract<GameCommand, { type: "construct_road" }>,
+  ): CommandResult {
+    if (command.expectedRevision !== this.state.revision)
+      return this.failure(
+        409,
+        "Simulation changed. Review the latest world state.",
+      );
+    const validation = validateRoadPlacement(
+      this.state.world,
+      command.placement,
+    );
+    if (!validation.valid)
+      return this.failure(422, validation.reasons.join(". "));
+    const resourceValidation = validateRoadConstructionResources(
+      this.state.cashCents,
+      this.state.warehouseInventory,
+    );
+    if (!resourceValidation.affordable)
+      return this.failure(422, resourceValidation.reasons.join(". "));
+    const world = placeRoad(this.state.world, command.placement);
+    const road = world.roads?.at(-1);
+    if (!road) return this.failure(422, "Road construction could not be completed.");
+    this.state.cashCents -= roadConstructionCost.cashCents;
+    this.state.world = world;
+    this.state.revision++;
+    this.addEvent(
+      this.state.simulationTime,
+      "logistics",
+      `Road constructed at (${road.x}, ${road.y}) for $${(roadConstructionCost.cashCents / 100).toFixed(2)}.`,
+    );
+    return {
+      ok: true,
+      status: 201,
+      road,
+      constructionCost: roadConstructionCost,
       readModel: this.readModel(),
     };
   }

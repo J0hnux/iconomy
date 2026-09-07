@@ -491,6 +491,122 @@ test("placement validation handles rotation, access, terrain, slopes, and occupa
   );
 });
 
+test("road placement extends the connected network without occupying invalid cells", () => {
+  const {
+    placeRoad,
+    validateRoadPlacement,
+  } = require("../world/domain/construction.ts");
+  const {
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const starting = createStartingWorld();
+  const candidate = starting.cells.find(
+    (cell) => validateRoadPlacement(starting, cell).valid,
+  );
+  assert.ok(candidate, "fixture needs a valid road extension");
+  assert.equal(validateRoadPlacement(starting, candidate).valid, true);
+
+  const placed = placeRoad(starting, candidate);
+  assert.equal(placed.roads.length, starting.roads.length + 1);
+  assert.deepEqual(placed.roads.at(-1), {
+    x: candidate.x,
+    y: candidate.y,
+    z: candidate.z,
+  });
+  assert.ok(
+    validateRoadPlacement(placed, candidate).reasons.includes(
+      "A road already occupies this cell",
+    ),
+  );
+
+  const occupied = starting.buildings[0];
+  assert.ok(
+    validateRoadPlacement(starting, occupied).reasons.includes(
+      "Cell is occupied by a building",
+    ),
+  );
+  const water = starting.cells.find((cell) => cell.terrain === "water");
+  assert.ok(
+    validateRoadPlacement(starting, water).reasons.includes(
+      "Road requires dry ground",
+    ),
+  );
+  assert.deepEqual(validateRoadPlacement(starting, { x: -1, y: 0 }).reasons, [
+    "Road must be inside the world",
+  ]);
+  const disconnected = starting.cells.find((cell) =>
+    validateRoadPlacement(starting, cell).reasons.includes(
+      "Road must connect to an adjacent road",
+    ),
+  );
+  assert.ok(disconnected);
+});
+
+test("authoritative road construction charges once and survives save loading", () => {
+  const {
+    roadConstructionCost,
+    validateRoadPlacement,
+  } = require("../world/domain/construction.ts");
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const initial = simulation.read(1_000);
+  const candidate = initial.world.cells.find(
+    (cell) => validateRoadPlacement(initial.world, cell).valid,
+  );
+  assert.ok(candidate, "fixture needs a valid road extension");
+
+  const accepted = simulation.execute(
+    {
+      type: "construct_road",
+      expectedRevision: initial.revision,
+      placement: { x: candidate.x, y: candidate.y },
+    },
+    1_000,
+  );
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.readModel.revision, initial.revision + 1);
+  assert.equal(
+    accepted.readModel.economy.market.cashCents,
+    initial.economy.market.cashCents - roadConstructionCost.cashCents,
+  );
+  assert.deepEqual(accepted.road, {
+    x: candidate.x,
+    y: candidate.y,
+    z: candidate.z,
+  });
+
+  const chargedState = simulation.exportSave();
+  const stale = simulation.execute(
+    {
+      type: "construct_road",
+      expectedRevision: initial.revision,
+      placement: { x: candidate.x, y: candidate.y },
+    },
+    1_000,
+  );
+  assert.equal(stale.status, 409);
+  assert.deepEqual(simulation.exportSave(), chargedState);
+  const duplicate = simulation.execute(
+    {
+      type: "construct_road",
+      expectedRevision: accepted.readModel.revision,
+      placement: { x: candidate.x, y: candidate.y },
+    },
+    1_000,
+  );
+  assert.equal(duplicate.status, 422);
+  assert.match(duplicate.error, /already occupies/);
+  assert.deepEqual(simulation.exportSave(), chargedState);
+
+  const restored = LocalGameSimulation.fromSave(
+    JSON.parse(JSON.stringify(chargedState)),
+  );
+  assert.deepEqual(restored.exportSave(), chargedState);
+});
+
 test("local simulation enforces construction revision and authoritative validation", () => {
   const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
   const { validatePlacement } = require("../world/domain/construction.ts");

@@ -4,10 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   constructionCosts,
   constructibleBuildingTypes,
+  roadConstructionCost,
   validateConstructionResources,
   validatePlacement,
+  validateRoadConstructionResources,
+  validateRoadPlacement,
   type ConstructibleBuildingType,
   type PlacementRequest,
+  type RoadPlacementRequest,
 } from "@/world/domain/construction";
 import {
   buildingAt,
@@ -183,7 +187,7 @@ export default function WorldMap({
   const [buildingVisualProfile, setBuildingVisualProfile] =
     useState<BuildingVisualProfileId>(defaultBuildingVisualProfile);
   const buildingVisualSet = buildingVisualProfiles[buildingVisualProfile];
-  const [tool, setTool] = useState<"inspect" | "build">("inspect");
+  const [tool, setTool] = useState<"inspect" | "build" | "road">("inspect");
   const [buildingType, setBuildingType] =
     useState<ConstructibleBuildingType>("farm");
   const [rotation, setRotation] = useState<BuildingRotation>("north");
@@ -234,7 +238,25 @@ export default function WorldMap({
   } | null>(null);
 
   const placement = useMemo<PlacementPreview | null>(() => {
-    if (tool !== "build" || !hovered) return null;
+    if (tool === "inspect" || !hovered) return null;
+    if (tool === "road") {
+      const request: RoadPlacementRequest = { x: hovered.x, y: hovered.y };
+      const physical = validateRoadPlacement(world, request);
+      const economic = production
+        ? validateRoadConstructionResources(
+            production.market.cashCents,
+            production.logistics.warehouseInventory,
+          )
+        : { affordable: false, reasons: ["Simulation is starting"] };
+      return {
+        request,
+        validation: {
+          ...physical,
+          valid: physical.valid && economic.affordable,
+          reasons: [...physical.reasons, ...economic.reasons],
+        },
+      };
+    }
     const request: PlacementRequest = {
       type: buildingType,
       x: hovered.x,
@@ -541,6 +563,23 @@ export default function WorldMap({
     }));
     setBuildMessage("A valid physical site is selected. Review affordability, then click the footprint to build.");
   };
+  const focusRoadSite = () => {
+    const candidate = world.cells.find(
+      (cell) => validateRoadPlacement(world, cell).valid,
+    );
+    if (!candidate) {
+      setBuildMessage("No dry, empty cell currently extends the road network.");
+      return;
+    }
+    setSelected(candidate);
+    setHovered(candidate);
+    setCamera((current) => ({
+      ...current,
+      focus: focusCell(candidate),
+      zoom: Math.max(current.zoom, 1.6),
+    }));
+    setBuildMessage("A valid road extension is selected. Click the cell to build.");
+  };
   const issueProductionCommand = (
     command: GameCommand,
     pendingMessage: string,
@@ -817,7 +856,53 @@ export default function WorldMap({
     );
   };
   const confirmPlacement = (candidate: SurfaceCell | null) => {
-    if (tool !== "build" || !candidate || submitting) return;
+    if (tool === "inspect" || !candidate || submitting) return;
+    if (tool === "road") {
+      const request: RoadPlacementRequest = { x: candidate.x, y: candidate.y };
+      const validation = validateRoadPlacement(world, request);
+      if (!validation.valid) {
+        setBuildMessage(validation.reasons.join(". "));
+        return;
+      }
+      setSubmitting(true);
+      setBuildMessage("Validating road construction command…");
+      try {
+        const simulation = simulationRef.current;
+        if (!simulation) throw new Error("Local simulation is starting.");
+        const result = simulation.execute(
+          {
+            type: "construct_road",
+            expectedRevision: revision,
+            placement: request,
+          },
+          currentSimulationTime(),
+        );
+        applyReadModel(result.readModel);
+        persistSimulation(simulation, { force: true });
+        if (!result.ok || !result.road) {
+          setBuildMessage(
+            result.ok ? "Road construction could not be completed." : result.error,
+          );
+          return;
+        }
+        setSelected(
+          result.readModel.world.cells[
+            result.road.y * result.readModel.world.size + result.road.x
+          ],
+        );
+        setHovered(null);
+        setBuildMessage(
+          `Road constructed. −${money(result.constructionCost?.cashCents ?? 0)}`,
+        );
+      } catch (error) {
+        setBuildMessage(
+          error instanceof Error ? error.message : "Road construction command failed.",
+        );
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
     const request: PlacementRequest = {
       type: buildingType,
       x: candidate.x,
@@ -895,6 +980,11 @@ export default function WorldMap({
   const selectedBuilding = selected
     ? buildingAt(world, selected.x, selected.y)
     : undefined;
+  const selectedRoad = selected
+    ? (world.roads ?? []).some(
+        (road) => road.x === selected.x && road.y === selected.y,
+      )
+    : false;
   const selectedProduction = selectedBuilding
     ? production?.sites.find((site) => site.buildingId === selectedBuilding.id)
     : undefined;
@@ -920,6 +1010,20 @@ export default function WorldMap({
   const chunk = selected ? chunkOf(selected, world.chunkSize) : null;
   const selectedPlacement = (() => {
     if (!selected) return null;
+    if (tool === "road") {
+      const physical = validateRoadPlacement(world, selected);
+      const economic = production
+        ? validateRoadConstructionResources(
+            production.market.cashCents,
+            production.logistics.warehouseInventory,
+          )
+        : { affordable: false, reasons: ["Simulation is starting"] };
+      return {
+        ...physical,
+        valid: physical.valid && economic.affordable,
+        reasons: [...physical.reasons, ...economic.reasons],
+      };
+    }
     const physical = validatePlacement(world, {
       type: buildingType,
       x: selected.x,
@@ -1030,7 +1134,11 @@ export default function WorldMap({
                 minute: "2-digit",
               }) + " · "
             : ""}
-          {tool === "build" ? "Build tool active" : "Local session"}
+          {tool === "build"
+            ? "Build tool active"
+            : tool === "road"
+              ? "Road tool active"
+              : "Local session"}
         </span>
         {saveMessage && (
           <span className="rounded-lg border border-amber-300/30 bg-amber-300/10 px-3 py-1.5 text-xs text-amber-100" role="status">
@@ -1072,7 +1180,7 @@ export default function WorldMap({
               };
             }}
             onPointerMove={(event) => {
-              if (tool === "build") {
+              if (tool !== "inspect") {
                 const bounds = event.currentTarget.getBoundingClientRect();
                 setHovered(
                   pickCell(
@@ -1123,7 +1231,7 @@ export default function WorldMap({
                   scene,
                   buildingVisualSet,
                 );
-                if (tool === "build") void confirmPlacement(candidate);
+                if (tool !== "inspect") void confirmPlacement(candidate);
                 else setSelected(candidate);
               }
               drag.current = null;
@@ -1165,13 +1273,13 @@ export default function WorldMap({
                     scene,
                     buildingVisualSet,
                   );
-                  if (tool === "build") void confirmPlacement(candidate);
+                  if (tool !== "inspect") void confirmPlacement(candidate);
                   else setSelected(candidate);
                 } else if (key === "escape") {
                   setTool("inspect");
                   setHovered(null);
                   setBuildMessage(null);
-                } else if (key === "r") rotatePreview();
+                } else if (key === "r" && tool === "build") rotatePreview();
                 else zoom(key === "-" ? 1 / 1.2 : 1.2);
               }
             }}
@@ -2200,21 +2308,50 @@ export default function WorldMap({
                   World tool
                 </p>
                 <h2 className="mt-1 text-lg font-semibold">
-                  {tool === "build" ? "Place building" : "Inspect"}
+                  {tool === "build"
+                    ? "Place building"
+                    : tool === "road"
+                      ? "Place road"
+                      : "Inspect"}
                 </h2>
               </div>
-              <button
-                className={button}
-                onClick={() => {
-                  setTool((current) =>
-                    current === "build" ? "inspect" : "build",
-                  );
-                  setHovered(null);
-                  setBuildMessage(null);
-                }}
-              >
-                {tool === "build" ? "Cancel" : "Build"}
-              </button>
+              <div className="flex gap-2">
+                {tool === "inspect" ? (
+                  <>
+                    <button
+                      className={button}
+                      onClick={() => {
+                        setTool("build");
+                        setHovered(null);
+                        setBuildMessage(null);
+                      }}
+                    >
+                      Buildings
+                    </button>
+                    <button
+                      className={button}
+                      onClick={() => {
+                        setTool("road");
+                        setHovered(null);
+                        setBuildMessage(null);
+                      }}
+                    >
+                      Roads
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className={button}
+                    onClick={() => {
+                      setTool("inspect");
+                      setHovered(null);
+                      setBuildMessage(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
             </div>
             {tool === "build" && (
               <div className="mt-4 space-y-3">
@@ -2315,6 +2452,37 @@ export default function WorldMap({
                 )}
               </div>
             )}
+            {tool === "road" && (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-lg border border-amber-200/30 bg-amber-200/5 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-semibold text-amber-100">
+                      Road
+                    </span>
+                    <span className="text-xs font-mono text-slate-200">
+                      {money(roadConstructionCost.cashCents)} / cell
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-slate-400">
+                    Extend the connected network across one dry, empty cell at
+                    a time. New segments provide road access for buildings.
+                  </p>
+                </div>
+                <button className={button} onClick={focusRoadSite}>
+                  Find extension
+                </button>
+                {placement && (
+                  <div
+                    className={`rounded-lg border p-3 text-xs ${placement.validation.valid ? "border-emerald-300/30 bg-emerald-300/5 text-emerald-200" : "border-red-300/30 bg-red-300/5 text-red-200"}`}
+                    aria-live="polite"
+                  >
+                    {placement.validation.valid
+                      ? "Valid road extension — click to build"
+                      : placement.validation.reasons.join(" · ")}
+                  </div>
+                )}
+              </div>
+            )}
             {buildMessage && (
               <p className="mt-3 text-xs text-amber-100" aria-live="polite">
                 {buildMessage}
@@ -2327,6 +2495,8 @@ export default function WorldMap({
           <h2 className="mt-2 text-xl font-medium">
             {selectedBuilding
               ? buildingDefinitions[selectedBuilding.type].name
+              : selectedRoad
+                ? "Road"
               : selectedResource
                 ? selectedResource.name
                 : selected
@@ -2377,7 +2547,9 @@ export default function WorldMap({
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-slate-400">
-                    Buildable ({buildingDefinitions[buildingType].name})
+                    {tool === "road"
+                      ? "Buildable (Road)"
+                      : `Buildable (${buildingDefinitions[buildingType].name})`}
                   </dt>
                   <dd>{selectedPlacement.valid ? "Yes" : "No"}</dd>
                 </div>
@@ -2390,7 +2562,7 @@ export default function WorldMap({
                 disabled={!selectedPlacement.valid}
                 onClick={() => confirmPlacement(selected)}
               >
-                Build here
+                {tool === "road" ? "Build road here" : "Build here"}
               </button>
             </div>
           )}
@@ -2918,6 +3090,14 @@ export default function WorldMap({
         }}
         onBuild={() => {
           setTool("build");
+          setMarketOpen(false);
+          setCompanyOpen(false);
+          setRegionalTradeOpen(false);
+          setHovered(null);
+          sidebarRef.current?.scrollTo({ top: 0 });
+        }}
+        onRoad={() => {
+          setTool("road");
           setMarketOpen(false);
           setCompanyOpen(false);
           setRegionalTradeOpen(false);
