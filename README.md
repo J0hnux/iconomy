@@ -216,6 +216,19 @@ For dependency verification, wait for the opening Crop shipment to reach the War
 
 For the playable gate, build two Farms and distribute the finite workforce unevenly. Accelerate time and compare their expected output and inventories, move labor between them, then pause one Farm and assign its released workers to another producer. Change a Farm or Workshop recipe when its local output is empty, use production priority to choose which Workshop receives scarce shared inputs first, and deliberately create then resolve a labor or input bottleneck. Reload the page and confirm all accepted controls survive.
 
+## Milestone 16.6: advanced market chart timeframes
+
+- The Novagrad Exchange has a focused commodity chart with shared 1s, 1m, 5m, 15m, 1H, 4H, and 1D timeframe controls plus the session-only Line/Candlestick toggle. Switching either setting keeps the commodity, Novagrad region, selected period, simulation state, and underlying history.
+- One pure read-model transformation sorts genuine price observations into deterministic timeframe boundaries. Candles use the first, maximum, minimum, and final observed prices as Open, High, Low, and Close. Line mode uses the Close from those same buckets rather than running a separate aggregation.
+- The rightmost bucket is displayed before it closes when it contains a genuine observation. Its Open remains fixed while later observations update High, Low, and Close. Completed buckets remain unchanged, single-observation candles remain flat, and empty periods do not receive fabricated prices.
+- Scheduled market prices still update every five simulation seconds; accepted sales may add observations between ticks. The 1s view is therefore intentionally sparse unless genuine events occur, and both compact and expanded views explain that cadence.
+- Expand Chart opens an accessible in-game analysis dialog with substantially more chart space. The compact preview and dialog share commodity, timeframe, chart type, and selected-period state. Escape, the close button, and backdrop click close it and restore focus. The simulation continues running while it is open.
+- Both modes provide keyboard-focusable and selectable periods with interval details. Candlestick mode shows Open, High, Low, and Close; Line mode shows the bucket interval and closing price.
+- Version 1 saves retain the same `PricePoint[]` format. The rolling history window grows from 12 observations to at most four simulation hours or 4,096 observations per commodity. Rendering remains bounded to 48 compact or 180 expanded periods.
+- No chart dependency was added. Market price formation, shortage rules, economic commands, and tick frequency remain unchanged; SVG rendering and chart controls remain presentation concerns.
+
+For chart verification, open Market, select Crops, choose Candlestick and 1s, then watch scheduled ticks or a sale create genuine buckets. Try every timeframe and compare Line closes with candle closes. Expand the chart, change to 1H, close it with Escape, and confirm the compact chart still shows Crops, Candlestick, and 1H while the simulation continues advancing.
+
 ## Run and verify
 
 ```bash

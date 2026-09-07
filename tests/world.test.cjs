@@ -1738,6 +1738,216 @@ test("market listings expose price trends, shortages, and actionable opportuniti
   );
 });
 
+test("line and candle modes share genuine OHLC history without mutating market state", () => {
+  const { buildPriceChartReadModel } = require("../world/domain/market.ts");
+  const history = [
+    { time: 20_000, priceCents: 1_300 },
+    { time: 0, priceCents: 1_200 },
+    { time: 10_000, priceCents: 1_100 },
+    { time: 5_000, priceCents: 1_500 },
+    { time: 15_000, priceCents: 1_400 },
+    { time: 30_000, priceCents: 1_600 },
+  ];
+  const original = JSON.stringify(history);
+  const chart = buildPriceChartReadModel(history, 15_000);
+
+  assert.equal(JSON.stringify(history), original);
+  assert.deepEqual(
+    chart.observations.map((point) => point.time),
+    [0, 5_000, 10_000, 15_000, 20_000, 30_000],
+  );
+  assert.deepEqual(chart.candles[0], {
+    startTime: 0,
+    endTime: 15_000,
+    openCents: 1_200,
+    highCents: 1_500,
+    lowCents: 1_100,
+    closeCents: 1_100,
+    observationCount: 3,
+    status: "complete",
+  });
+  assert.deepEqual(chart.candles[1], {
+    startTime: 15_000,
+    endTime: 30_000,
+    openCents: 1_400,
+    highCents: 1_400,
+    lowCents: 1_300,
+    closeCents: 1_300,
+    observationCount: 2,
+    status: "complete",
+  });
+  assert.deepEqual(chart.candles[2], {
+    startTime: 30_000,
+    endTime: 45_000,
+    openCents: 1_600,
+    highCents: 1_600,
+    lowCents: 1_600,
+    closeCents: 1_600,
+    observationCount: 1,
+    status: "active",
+  });
+  assert.equal(
+    chart.candles.reduce(
+      (total, candle) => total + candle.observationCount,
+      0,
+    ),
+    chart.observations.length,
+  );
+  const lineAfterModeSwitch = buildPriceChartReadModel(
+    history,
+    15_000,
+  ).observations;
+  assert.deepEqual(lineAfterModeSwitch, chart.observations);
+  assert.equal(JSON.stringify(history), original);
+  assert.deepEqual(
+    chart.linePoints.map((point) => point.priceCents),
+    chart.candles.map((candle) => candle.closeCents),
+  );
+  assert.deepEqual(buildPriceChartReadModel([], 15_000), {
+    observations: [],
+    candles: [],
+    linePoints: [],
+    candleIntervalMs: 15_000,
+  });
+  assert.throws(() => buildPriceChartReadModel(history, 0), RangeError);
+});
+
+test("all market chart timeframes use deterministic boundaries and shared closes", () => {
+  const {
+    buildPriceChartReadModel,
+    marketChartTimeframes,
+  } = require("../world/domain/market.ts");
+  assert.deepEqual(
+    marketChartTimeframes.map((timeframe) => timeframe.label),
+    ["1s", "1m", "5m", "15m", "1H", "4H", "1D"],
+  );
+  for (const timeframe of marketChartTimeframes) {
+    const duration = timeframe.durationMs;
+    const chart = buildPriceChartReadModel(
+      [
+        { time: duration - 1, priceCents: 1_000 },
+        { time: duration, priceCents: 1_200 },
+        { time: duration + 1, priceCents: 900 },
+      ],
+      duration,
+      duration + 1,
+    );
+    assert.deepEqual(
+      chart.candles.map((candle) => [candle.startTime, candle.endTime]),
+      [
+        [0, duration],
+        [duration, duration * 2],
+      ],
+      timeframe.label,
+    );
+    assert.equal(chart.candles[0].status, "complete");
+    assert.equal(chart.candles[1].status, "active");
+    assert.deepEqual(
+      chart.linePoints.map((point) => point.priceCents),
+      chart.candles.map((candle) => candle.closeCents),
+    );
+  }
+});
+
+test("active market candle updates from genuine observations and completed candles stay fixed", () => {
+  const { buildPriceChartReadModel } = require("../world/domain/market.ts");
+  const initial = buildPriceChartReadModel(
+    [{ time: 100, priceCents: 1_200 }],
+    1_000,
+    200,
+  );
+  assert.deepEqual(initial.candles[0], {
+    startTime: 0,
+    endTime: 1_000,
+    openCents: 1_200,
+    highCents: 1_200,
+    lowCents: 1_200,
+    closeCents: 1_200,
+    observationCount: 1,
+    status: "active",
+  });
+  const forming = buildPriceChartReadModel(
+    [
+      { time: 100, priceCents: 1_200 },
+      { time: 220, priceCents: 1_240 },
+      { time: 510, priceCents: 1_180 },
+      { time: 840, priceCents: 1_230 },
+    ],
+    1_000,
+    840,
+  );
+  assert.equal(forming.candles[0].openCents, 1_200);
+  assert.equal(forming.candles[0].highCents, 1_240);
+  assert.equal(forming.candles[0].lowCents, 1_180);
+  assert.equal(forming.candles[0].closeCents, 1_230);
+  const completed = buildPriceChartReadModel(
+    forming.observations,
+    1_000,
+    1_000,
+  ).candles[0];
+  const nextBucket = buildPriceChartReadModel(
+    [...forming.observations, { time: 1_000, priceCents: 1_300 }],
+    1_000,
+    1_100,
+  );
+  assert.deepEqual(nextBucket.candles[0], completed);
+  assert.deepEqual(nextBucket.candles[1], {
+    startTime: 1_000,
+    endTime: 2_000,
+    openCents: 1_300,
+    highCents: 1_300,
+    lowCents: 1_300,
+    closeCents: 1_300,
+    observationCount: 1,
+    status: "active",
+  });
+  assert.equal(
+    nextBucket.candles.reduce(
+      (total, candle) => total + candle.observationCount,
+      0,
+    ),
+    nextBucket.observations.length,
+  );
+});
+
+test("market history retention is bounded without changing price observation cadence", () => {
+  const {
+    marketPriceHistoryLimit,
+    marketPriceHistoryRetentionMs,
+    retainMarketPriceHistory,
+  } = require("../world/domain/market.ts");
+  const latestTime = marketPriceHistoryRetentionMs + 10_000;
+  const history = Array.from(
+    { length: marketPriceHistoryLimit + 10 },
+    (_, index) => ({ time: latestTime - index, priceCents: 1_000 + index }),
+  ).reverse();
+  history.unshift({ time: 0, priceCents: 500 });
+  const retained = retainMarketPriceHistory(history, latestTime);
+  assert.equal(retained.length, marketPriceHistoryLimit);
+  assert.ok(
+    retained.every(
+      (point) => point.time >= latestTime - marketPriceHistoryRetentionMs,
+    ),
+  );
+
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const before = simulation.read(1_000).economy.market.listings.find(
+    (listing) => listing.commodity === "crops",
+  ).history.length;
+  const beforeTick = simulation.read(5_999).economy.market.listings.find(
+    (listing) => listing.commodity === "crops",
+  ).history.length;
+  const afterTick = simulation.read(6_000).economy.market.listings.find(
+    (listing) => listing.commodity === "crops",
+  ).history.length;
+  assert.equal(beforeTick, before);
+  assert.equal(afterTick, before + 1);
+});
+
 test("market sales remove warehouse goods, credit cash, and create events", () => {
   const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
   const simulation = new LocalGameSimulation(createStartingWorld(), 1_000);

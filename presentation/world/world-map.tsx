@@ -28,7 +28,10 @@ import {
   productionRecipes,
 } from "@/world/domain/production";
 import { commodityDefinitions } from "@/world/domain/commodities";
-import type { PricePoint } from "@/world/domain/market";
+import {
+  marketChartTimeframes,
+  type MarketChartTimeframeId,
+} from "@/world/domain/market";
 import {
   LocalGameSimulation,
   type CommandResult,
@@ -59,6 +62,11 @@ import {
   defaultBuildingVisualProfile,
   type BuildingVisualProfileId,
 } from "./buildings";
+import {
+  MarketChartControls,
+  MarketPriceChart,
+  type MarketChartType,
+} from "./price-chart";
 
 const button =
   "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-amber-200 disabled:opacity-30";
@@ -92,35 +100,6 @@ const materialSummary = (
         `${quantity} ${commodityDefinitions[commodity as Commodity].name}`,
     )
     .join(" · ");
-
-function PriceSparkline({ history }: { history: readonly PricePoint[] }) {
-  const values = history.map((point) => point.priceCents);
-  const minimum = Math.min(...values),
-    maximum = Math.max(...values);
-  const range = Math.max(1, maximum - minimum);
-  const points = values
-    .map(
-      (value, index) =>
-        `${values.length === 1 ? 50 : (index / (values.length - 1)) * 100},${28 - ((value - minimum) / range) * 24}`,
-    )
-    .join(" ");
-  return (
-    <svg
-      viewBox="0 0 100 32"
-      role="img"
-      aria-label="Recent price trend"
-      className="h-8 w-full overflow-visible"
-    >
-      <polyline
-        points={points}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        vectorEffect="non-scaling-stroke"
-      />
-    </svg>
-  );
-}
 
 export default function WorldMap({
   world: initialWorld,
@@ -168,6 +147,18 @@ export default function WorldMap({
   const [productionBusy, setProductionBusy] = useState(false);
   const [marketOpen, setMarketOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
+  const [marketChartType, setMarketChartType] =
+    useState<MarketChartType>("line");
+  const [marketChartTimeframe, setMarketChartTimeframe] =
+    useState<MarketChartTimeframeId>("1m");
+  const [selectedMarketCommodity, setSelectedMarketCommodity] =
+    useState<Commodity>("crops");
+  const [selectedMarketPeriodStart, setSelectedMarketPeriodStart] = useState<
+    number | null
+  >(null);
+  const [marketChartExpanded, setMarketChartExpanded] = useState(false);
+  const marketChartCloseRef = useRef<HTMLButtonElement>(null);
+  const marketChartReturnFocusRef = useRef<HTMLElement | null>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const [marketMessage, setMarketMessage] = useState<string | null>(null);
   const [simulationSpeed, setSimulationSpeed] = useState<SimulationSpeed>(1);
@@ -322,6 +313,21 @@ export default function WorldMap({
     lastWallTimeRef.current = Date.now();
     snapshotWallTimeRef.current = Date.now();
   }, [simulationSpeed]);
+
+  useEffect(() => {
+    if (!marketChartExpanded) return;
+    marketChartCloseRef.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setMarketChartExpanded(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      marketChartReturnFocusRef.current?.focus();
+    };
+  }, [marketChartExpanded]);
 
   useEffect(() => {
     let simulation: LocalGameSimulation;
@@ -622,6 +628,9 @@ export default function WorldMap({
   const selectedProduction = selectedBuilding
     ? production?.sites.find((site) => site.buildingId === selectedBuilding.id)
     : undefined;
+  const selectedMarketListing = production?.market.listings.find(
+    (listing) => listing.commodity === selectedMarketCommodity,
+  );
   const selectedWarehouseInventory =
     production && selectedBuilding?.type === "warehouse"
       ? production.logistics.warehouseInventory
@@ -1012,6 +1021,89 @@ export default function WorldMap({
                   </span>
                 </div>
               </div>
+              {selectedMarketListing && (
+                <section
+                  className="mt-4 rounded-xl border border-sky-300/20 bg-slate-950/35 p-3"
+                  aria-label={`${selectedMarketListing.name} price chart`}
+                >
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <label className="min-w-0 flex-1 text-[10px] uppercase tracking-[0.16em] text-slate-400">
+                      Commodity
+                      <select
+                        className="mt-1 block w-full rounded-md border border-white/15 bg-slate-900 px-2 py-2 text-xs normal-case tracking-normal text-slate-100"
+                        value={selectedMarketCommodity}
+                        onChange={(event) =>
+                          setSelectedMarketCommodity(
+                            event.target.value as Commodity,
+                          )
+                        }
+                      >
+                        {production.market.listings.map((listing) => (
+                          <option
+                            key={listing.commodity}
+                            value={listing.commodity}
+                          >
+                            {listing.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      className={`${button} px-2 py-2 text-[11px]`}
+                      onClick={(event) => {
+                        marketChartReturnFocusRef.current = event.currentTarget;
+                        setMarketChartExpanded(true);
+                      }}
+                    >
+                      Expand Chart
+                    </button>
+                  </div>
+                  <div className="mt-3">
+                    <MarketChartControls
+                      chartType={marketChartType}
+                      timeframeId={marketChartTimeframe}
+                      onChartTypeChange={setMarketChartType}
+                      onTimeframeChange={setMarketChartTimeframe}
+                    />
+                  </div>
+                  <div className="mt-3 flex items-center justify-between text-[10px] text-slate-500">
+                    <span>Novagrad · simulation history</span>
+                    <span>
+                      {selectedMarketListing.history.length} observations ·{" "}
+                      {
+                        marketChartTimeframes.find(
+                          (timeframe) =>
+                            timeframe.id === marketChartTimeframe,
+                        )!.label
+                      }
+                    </span>
+                  </div>
+                  <MarketPriceChart
+                    history={selectedMarketListing.history}
+                    chartType={marketChartType}
+                    timeframeId={marketChartTimeframe}
+                    currentTime={production.simulationTime}
+                    selectedPeriodStart={selectedMarketPeriodStart}
+                    onSelectedPeriodStartChange={
+                      setSelectedMarketPeriodStart
+                    }
+                  />
+                  {marketChartType === "candlestick" && (
+                    <div className="mt-1 flex justify-center gap-4 text-[10px]">
+                      <span className="text-emerald-300">■ Rising</span>
+                      <span className="text-rose-300">■ Falling</span>
+                      <span className="text-slate-400">■ Unchanged</span>
+                    </div>
+                  )}
+                  {marketChartTimeframe === "1s" && (
+                    <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                      The market publishes scheduled prices every 5 simulation
+                      seconds. Empty 1s intervals remain empty; sales can add
+                      genuine observations between ticks.
+                    </p>
+                  )}
+                </section>
+              )}
               <div className="mt-4 space-y-3">
                 {production.market.listings.map((listing) => (
                   <article
@@ -1044,16 +1136,7 @@ export default function WorldMap({
                         </span>
                       </div>
                     </div>
-                    <div
-                      className={
-                        listing.trendPercent > 0
-                          ? "mt-1 text-red-300"
-                          : "mt-1 text-emerald-300"
-                      }
-                    >
-                      <PriceSparkline history={listing.history} />
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="mt-3 flex items-center justify-between gap-2">
                       <span
                         className={`rounded-full px-2 py-1 text-[10px] uppercase ${listing.shortage === "critical" ? "bg-red-400/10 text-red-300" : listing.shortage === "low" ? "bg-amber-300/10 text-amber-200" : "bg-emerald-300/10 text-emerald-200"}`}
                       >
@@ -2040,6 +2123,130 @@ export default function WorldMap({
             }));
         }}
       />
+      {marketChartExpanded && selectedMarketListing && production && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget)
+              setMarketChartExpanded(false);
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="expanded-market-chart-title"
+            className="max-h-[92vh] w-full max-w-6xl overflow-y-auto rounded-2xl border border-sky-300/25 bg-[#101e28] p-4 shadow-2xl md:p-6"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 pb-4">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-sky-200">
+                  Novagrad local market
+                </p>
+                <h2
+                  id="expanded-market-chart-title"
+                  className="mt-1 text-2xl font-semibold"
+                >
+                  {selectedMarketListing.name} — Market Analysis
+                </h2>
+                <div className="mt-2 flex items-baseline gap-3">
+                  <span className="font-mono text-xl text-white">
+                    {money(selectedMarketListing.priceCents)}
+                  </span>
+                  <span
+                    className={`text-sm ${selectedMarketListing.trendPercent > 0 ? "text-red-300" : selectedMarketListing.trendPercent < 0 ? "text-emerald-300" : "text-slate-400"}`}
+                  >
+                    {selectedMarketListing.trendPercent > 0
+                      ? "▲"
+                      : selectedMarketListing.trendPercent < 0
+                        ? "▼"
+                        : "—"}{" "}
+                    {Math.abs(selectedMarketListing.trendPercent).toFixed(1)}%
+                  </span>
+                </div>
+              </div>
+              <button
+                ref={marketChartCloseRef}
+                className={`${button} px-3 py-2`}
+                aria-label="Close expanded market chart"
+                onClick={() => setMarketChartExpanded(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="mt-4 grid gap-4 md:grid-cols-[minmax(12rem,16rem)_1fr] md:items-end">
+              <label className="text-[10px] uppercase tracking-[0.16em] text-slate-400">
+                Commodity
+                <select
+                  className="mt-1 block w-full rounded-md border border-white/15 bg-slate-900 px-3 py-2 text-sm normal-case tracking-normal text-slate-100"
+                  value={selectedMarketCommodity}
+                  onChange={(event) =>
+                    setSelectedMarketCommodity(event.target.value as Commodity)
+                  }
+                >
+                  {production.market.listings.map((listing) => (
+                    <option key={listing.commodity} value={listing.commodity}>
+                      {listing.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <MarketChartControls
+                chartType={marketChartType}
+                timeframeId={marketChartTimeframe}
+                onChartTypeChange={setMarketChartType}
+                onTimeframeChange={setMarketChartTimeframe}
+              />
+            </div>
+            <div className="mt-4 rounded-xl border border-white/10 bg-slate-950/35 p-3 md:p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
+                <span>
+                  {marketChartType === "line"
+                    ? "Bucket close price"
+                    : "Open · High · Low · Close"}
+                </span>
+                <span>
+                  {
+                    marketChartTimeframes.find(
+                      (timeframe) => timeframe.id === marketChartTimeframe,
+                    )!.label
+                  }{" "}
+                  timeframe · {selectedMarketListing.history.length} genuine
+                  observations
+                </span>
+              </div>
+              <MarketPriceChart
+                history={selectedMarketListing.history}
+                chartType={marketChartType}
+                timeframeId={marketChartTimeframe}
+                currentTime={production.simulationTime}
+                expanded
+                selectedPeriodStart={selectedMarketPeriodStart}
+                onSelectedPeriodStartChange={setSelectedMarketPeriodStart}
+              />
+              {marketChartType === "candlestick" && (
+                <div className="mt-3 flex justify-center gap-5 text-[11px]">
+                  <span className="text-emerald-300">■ Rising</span>
+                  <span className="text-rose-300">■ Falling</span>
+                  <span className="text-slate-400">■ Unchanged</span>
+                  <span className="text-amber-300">□ Active</span>
+                </div>
+              )}
+            </div>
+            <p className="mt-3 text-xs leading-5 text-slate-400">
+              The simulation continues while this chart is open. Every point
+              comes from the saved market observation stream; chart refreshes
+              never create prices.
+            </p>
+            {marketChartTimeframe === "1s" && (
+              <p className="mt-2 text-xs leading-5 text-amber-100/80">
+                Scheduled market prices arrive every 5 simulation seconds, so
+                the 1s view is intentionally sparse. A sale may add another
+                genuine observation between scheduled ticks.
+              </p>
+            )}
+          </section>
+        </div>
+      )}
     </main>
   );
 }

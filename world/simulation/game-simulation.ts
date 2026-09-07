@@ -18,6 +18,7 @@ import {
   buildMarketListings,
   marketDefinitions,
   marketPriceCents,
+  retainMarketPriceHistory,
   shortageLevel,
   type EconomyEvent,
   type PricePoint,
@@ -1003,8 +1004,10 @@ export class LocalGameSimulation {
         this.state.warehouseInventory[commodity],
         this.state.marketTick,
       );
-      history.push({ time, priceCents });
-      if (history.length > 12) history.splice(0, history.length - 12);
+      this.state.priceHistory[commodity] = retainMarketPriceHistory(
+        [...history, { time, priceCents }],
+        time,
+      );
       const shortage = shortageLevel(
         commodity,
         this.state.warehouseInventory[commodity],

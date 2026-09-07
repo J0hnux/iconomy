@@ -43,6 +43,111 @@ export const marketDefinitions: Record<
 };
 
 export type PricePoint = Readonly<{ time: number; priceCents: number }>;
+export const marketChartTimeframes = [
+  { id: "1s", label: "1s", durationMs: 1_000 },
+  { id: "1m", label: "1m", durationMs: 60_000 },
+  { id: "5m", label: "5m", durationMs: 5 * 60_000 },
+  { id: "15m", label: "15m", durationMs: 15 * 60_000 },
+  { id: "1h", label: "1H", durationMs: 60 * 60_000 },
+  { id: "4h", label: "4H", durationMs: 4 * 60 * 60_000 },
+  { id: "1d", label: "1D", durationMs: 24 * 60 * 60_000 },
+] as const;
+export type MarketChartTimeframeId =
+  (typeof marketChartTimeframes)[number]["id"];
+export const marketPriceHistoryRetentionMs = 4 * 60 * 60_000;
+export const marketPriceHistoryLimit = 4_096;
+export type PriceCandle = Readonly<{
+  startTime: number;
+  endTime: number;
+  openCents: number;
+  highCents: number;
+  lowCents: number;
+  closeCents: number;
+  observationCount: number;
+  status: "active" | "complete";
+}>;
+export type PriceChartPoint = Readonly<{
+  startTime: number;
+  endTime: number;
+  priceCents: number;
+  observationCount: number;
+  status: "active" | "complete";
+}>;
+export type PriceChartReadModel = Readonly<{
+  observations: readonly PricePoint[];
+  candles: readonly PriceCandle[];
+  linePoints: readonly PriceChartPoint[];
+  candleIntervalMs: number;
+}>;
+
+export function retainMarketPriceHistory(
+  history: readonly PricePoint[],
+  latestTime: number,
+) {
+  const cutoff = latestTime - marketPriceHistoryRetentionMs;
+  return history
+    .filter((point) => point.time >= cutoff)
+    .slice(-marketPriceHistoryLimit);
+}
+
+export function buildPriceChartReadModel(
+  history: readonly PricePoint[],
+  candleIntervalMs = 15_000,
+  currentTime = history.at(-1)?.time ?? 0,
+): PriceChartReadModel {
+  if (!Number.isSafeInteger(candleIntervalMs) || candleIntervalMs <= 0)
+    throw new RangeError("Candle interval must be a positive safe integer.");
+  const observations = history
+    .map((point, index) => ({ point: { ...point }, index }))
+    .sort(
+      (first, second) =>
+        first.point.time - second.point.time || first.index - second.index,
+    )
+    .map(({ point }) => point);
+  const candles: PriceCandle[] = [];
+  for (const observation of observations) {
+    const startTime =
+      Math.floor(observation.time / candleIntervalMs) * candleIntervalMs;
+    const current = candles.at(-1);
+    if (!current || current.startTime !== startTime) {
+      candles.push({
+        startTime,
+        endTime: startTime + candleIntervalMs,
+        openCents: observation.priceCents,
+        highCents: observation.priceCents,
+        lowCents: observation.priceCents,
+        closeCents: observation.priceCents,
+        observationCount: 1,
+        status: "active",
+      });
+      continue;
+    }
+    candles[candles.length - 1] = {
+      ...current,
+      highCents: Math.max(current.highCents, observation.priceCents),
+      lowCents: Math.min(current.lowCents, observation.priceCents),
+      closeCents: observation.priceCents,
+      observationCount: current.observationCount + 1,
+    };
+  }
+  const timedCandles = candles.map((candle) => ({
+    ...candle,
+    status: candle.endTime <= currentTime ? "complete" : "active",
+  })) satisfies PriceCandle[];
+  return {
+    observations,
+    candles: timedCandles,
+    linePoints: timedCandles.map((candle) => ({
+      startTime: candle.startTime,
+      endTime: candle.endTime,
+      priceCents: candle.closeCents,
+      observationCount: candle.observationCount,
+      status: candle.status,
+    })),
+    candleIntervalMs,
+  };
+}
+
 export type ShortageLevel = "none" | "low" | "critical";
 export type MarketListing = Readonly<{
   commodity: Commodity;
