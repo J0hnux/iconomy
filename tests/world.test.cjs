@@ -684,32 +684,49 @@ test("unaffordable construction leaves authoritative resources unchanged", () =>
 });
 
 test("population needs derive deterministically from authoritative world and economy state", () => {
-  const { describePopulation } = require("../world/domain/population.ts");
+  const {
+    describeFoodNeed,
+    describePopulation,
+  } = require("../world/domain/population.ts");
+  const {
+    normalizeCommodityInventory,
+  } = require("../world/domain/commodities.ts");
   const { LocalGameSimulation, createStartingWorld } = require("../world/simulation/game-simulation.ts");
   const startingWorld = createStartingWorld();
-  assert.deepEqual(describePopulation(startingWorld, 5, 8), {
+  const foodNeed = describeFoodNeed(
+    normalizeCommodityInventory({ food: 8 }),
+    10,
+    null,
+  );
+  assert.deepEqual(describePopulation(startingWorld, 5, foodNeed), {
     totalPopulation: 10,
     workingAgePopulation: 6,
     availableWorkers: 1,
     employedWorkers: 5,
     unemployedWorkers: 1,
     housingCapacity: 12,
-    foodSupply: 8,
+    foodRequired: 10,
+    foodAvailable: 16,
+    foodConsumed: 0,
+    foodSupplyPercent: 100,
+    mainFoodSources: [],
   });
-  assert.throws(() => describePopulation(startingWorld, 7, 8), RangeError);
-  assert.throws(() => describePopulation(startingWorld, 5, -1), RangeError);
+  assert.throws(
+    () => describePopulation(startingWorld, 7, foodNeed),
+    RangeError,
+  );
 
   const simulation = new LocalGameSimulation(startingWorld, 1_000);
   const initialEconomy = simulation.read(1_000).economy;
   assert.deepEqual(
     initialEconomy.population,
-    describePopulation(startingWorld, 5, 8),
+    describePopulation(startingWorld, 5, foodNeed),
   );
   const initialCropShipment = initialEconomy.logistics.shipments.find(
     (shipment) => shipment.cargo.commodity === "crops",
   );
   const arrived = simulation.read(initialCropShipment.arrivalTime).economy;
-  assert.equal(arrived.population.foodSupply, 8);
+  assert.equal(arrived.population.foodAvailable, 20);
   assert.equal(arrived.logistics.warehouseInventory.crops, 4);
 });
 
@@ -798,7 +815,11 @@ test("production advances from explicit simulation time and explains idle states
     employedWorkers: 6,
     unemployedWorkers: 0,
     housingCapacity: 12,
-    foodSupply: 8,
+    foodRequired: 10,
+    foodAvailable: 16,
+    foodConsumed: 0,
+    foodSupplyPercent: 100,
+    mainFoodSources: [],
   });
   assert.equal(
     staffed.readModel.economy.sites.find((site) => site.type === "lumber_camp").status,
@@ -1973,7 +1994,7 @@ test("market sales remove warehouse goods, credit cash, and create events", () =
   assert.equal(sale.ok, true);
   assert.equal(sale.revenueCents, food.priceCents * 2);
   assert.equal(sale.readModel.economy.logistics.warehouseInventory.food, 6);
-  assert.equal(sale.readModel.economy.population.foodSupply, 6);
+  assert.equal(sale.readModel.economy.population.foodAvailable, 12);
   assert.equal(
     sale.readModel.economy.market.cashCents,
     initial.market.cashCents + sale.revenueCents,
@@ -2061,4 +2082,123 @@ test("commodity browser chains and related goods come from production recipes", 
     "animal_feed",
     "prepared_meal",
   ]);
+});
+
+test("household food demand and configured food values are deterministic", () => {
+  const {
+    availableFoodValue,
+    consumeHouseholdFood,
+    foodRequired,
+    populationPolicy,
+  } = require("../world/domain/population.ts");
+  const {
+    normalizeCommodityInventory,
+  } = require("../world/domain/commodities.ts");
+  const oneOfEach = normalizeCommodityInventory({
+    crops: 1,
+    food: 1,
+    cooked_meat: 1,
+    prepared_meal: 1,
+  });
+  assert.equal(availableFoodValue(oneOfEach), 10);
+  assert.deepEqual(
+    Object.fromEntries(
+      populationPolicy.foodSources.map((source) => [
+        source.commodity,
+        source.foodValue,
+      ]),
+    ),
+    { prepared_meal: 4, cooked_meat: 3, food: 2, crops: 1 },
+  );
+  assert.equal(foodRequired(10), 10);
+  assert.equal(foodRequired(25), 25);
+
+  for (const [commodity, foodValue] of [
+    ["crops", 1],
+    ["food", 2],
+    ["cooked_meat", 3],
+    ["prepared_meal", 4],
+  ]) {
+    const result = consumeHouseholdFood(
+      normalizeCommodityInventory({ [commodity]: 1 }),
+      1,
+    );
+    assert.equal(result.inventory[commodity], 0);
+    assert.equal(result.consumption.consumedFoodValue, foodValue);
+  }
+});
+
+test("higher population consumes more food and shortages report unmet demand", () => {
+  const {
+    consumeHouseholdFood,
+  } = require("../world/domain/population.ts");
+  const {
+    normalizeCommodityInventory,
+  } = require("../world/domain/commodities.ts");
+  const stocked = normalizeCommodityInventory({ food: 100 });
+  const small = consumeHouseholdFood(stocked, 2);
+  const large = consumeHouseholdFood(stocked, 10);
+  assert.equal(small.inventory.food, 99);
+  assert.equal(large.inventory.food, 95);
+  assert.equal(small.consumption.requiredFoodValue, 2);
+  assert.equal(large.consumption.requiredFoodValue, 10);
+
+  const shortage = consumeHouseholdFood(
+    normalizeCommodityInventory({ crops: 4 }),
+    10,
+  );
+  assert.equal(shortage.inventory.crops, 0);
+  assert.equal(shortage.consumption.availableFoodValue, 4);
+  assert.equal(shortage.consumption.consumedFoodValue, 4);
+  assert.equal(shortage.consumption.supplyPercent, 40);
+});
+
+test("timed household consumption is step-independent and survives save loading", () => {
+  const {
+    LocalGameSimulation,
+    createStartingWorld,
+  } = require("../world/simulation/game-simulation.ts");
+  const direct = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const stepped = new LocalGameSimulation(createStartingWorld(), 1_000);
+  direct.read(181_000);
+  stepped.read(61_000);
+  stepped.read(121_000);
+  const finalStep = stepped.read(181_000).economy;
+  assert.deepEqual(direct.exportSave(), stepped.exportSave());
+  assert.equal(finalStep.logistics.warehouseInventory.food, 0);
+  assert.equal(finalStep.logistics.warehouseInventory.crops, 0);
+  assert.equal(finalStep.population.foodRequired, 10);
+  assert.equal(finalStep.population.foodConsumed, 0);
+  assert.equal(finalStep.population.foodSupplyPercent, 0);
+
+  const firstPeriod = new LocalGameSimulation(createStartingWorld(), 1_000);
+  const afterFirst = firstPeriod.read(61_000).economy;
+  assert.equal(afterFirst.logistics.warehouseInventory.food, 3);
+  assert.equal(afterFirst.population.foodConsumed, 10);
+  assert.equal(afterFirst.population.foodSupplyPercent, 100);
+  assert.deepEqual(afterFirst.population.mainFoodSources, [
+    {
+      commodity: "food",
+      name: "Basic Food",
+      unitsConsumed: 5,
+      foodValue: 2,
+      totalFoodValue: 10,
+    },
+  ]);
+
+  const saved = JSON.parse(JSON.stringify(firstPeriod.exportSave()));
+  const restored = LocalGameSimulation.fromSave(saved);
+  assert.deepEqual(restored.read(61_000), firstPeriod.read(61_000));
+  assert.deepEqual(
+    restored.read(121_000),
+    firstPeriod.read(121_000),
+  );
+
+  delete saved.foodConsumptionUpdatedAt;
+  delete saved.lastFoodConsumption;
+  const legacy = LocalGameSimulation.fromSave(saved);
+  assert.equal(
+    legacy.read(saved.simulationTime).economy.logistics.warehouseInventory.food,
+    saved.warehouseInventory.food,
+  );
 });

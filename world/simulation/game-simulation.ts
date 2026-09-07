@@ -49,7 +49,15 @@ import {
   commodityRecord,
   normalizeCommodityInventory,
 } from "../domain/commodities";
-import { describePopulation } from "../domain/population";
+import {
+  consumeHouseholdFood,
+  describeFoodNeed,
+  describePopulation,
+  isFoodConsumptionResult,
+  populationPolicy,
+  workingAgePopulation,
+  type FoodConsumptionResult,
+} from "../domain/population";
 import { describeLabor, validateLaborAssignment } from "../domain/labor";
 import {
   buildingDefinitions,
@@ -134,6 +142,8 @@ export type LocalSimulationSaveV1 = Readonly<{
   shortages: Readonly<Record<Commodity, ShortageLevel>>;
   events: readonly EconomyEvent[];
   nextEvent: number;
+  foodConsumptionUpdatedAt?: number;
+  lastFoodConsumption?: FoodConsumptionResult | null;
 }>;
 
 type MutableSimulationState = {
@@ -151,6 +161,8 @@ type MutableSimulationState = {
   shortages: Record<Commodity, ShortageLevel>;
   events: EconomyEvent[];
   nextEvent: number;
+  foodConsumptionUpdatedAt: number;
+  lastFoodConsumption: FoodConsumptionResult | null;
 };
 
 export function createStartingWorld() {
@@ -195,7 +207,17 @@ function isLocalSimulationSaveV1(
     !isNonnegativeInteger(value.cashCents) ||
     !isNonnegativeInteger(value.marketTick) ||
     !Number.isSafeInteger(value.marketUpdatedAt) ||
-    !isNonnegativeInteger(value.nextEvent)
+    !isNonnegativeInteger(value.nextEvent) ||
+    (value.foodConsumptionUpdatedAt !== undefined &&
+      (!Number.isSafeInteger(value.foodConsumptionUpdatedAt) ||
+        (value.foodConsumptionUpdatedAt as number) >
+          (value.simulationTime as number) ||
+        (value.simulationTime as number) -
+            (value.foodConsumptionUpdatedAt as number) >=
+          populationPolicy.foodConsumptionPeriodMs)) ||
+    (value.lastFoodConsumption !== undefined &&
+      value.lastFoodConsumption !== null &&
+      !isFoodConsumptionResult(value.lastFoodConsumption))
   )
     return false;
   for (const commodity of ["food", "wood", "stone"] as Commodity[]) {
@@ -291,6 +313,16 @@ export class LocalGameSimulation {
         shortages,
         events: restored.events.map((event) => ({ ...event })),
         nextEvent: restored.nextEvent,
+        foodConsumptionUpdatedAt:
+          restored.foodConsumptionUpdatedAt ?? restored.simulationTime,
+        lastFoodConsumption: restored.lastFoodConsumption
+          ? {
+              ...restored.lastFoodConsumption,
+              sources: restored.lastFoodConsumption.sources.map((source) => ({
+                ...source,
+              })),
+            }
+          : null,
       };
       for (const building of this.producers) {
         const existing = this.state.productionStates.get(building.id);
@@ -433,6 +465,8 @@ export class LocalGameSimulation {
           : []),
       ],
       nextEvent: shipments.length ? 4 : 3,
+      foodConsumptionUpdatedAt: startTime,
+      lastFoodConsumption: null,
     };
   }
 
@@ -511,6 +545,15 @@ export class LocalGameSimulation {
       shortages: { ...this.state.shortages },
       events: [...this.state.events],
       nextEvent: this.state.nextEvent,
+      foodConsumptionUpdatedAt: this.state.foodConsumptionUpdatedAt,
+      lastFoodConsumption: this.state.lastFoodConsumption
+        ? {
+            ...this.state.lastFoodConsumption,
+            sources: this.state.lastFoodConsumption.sources.map((source) => ({
+              ...source,
+            })),
+          }
+        : null,
     };
   }
 
@@ -533,19 +576,27 @@ export class LocalGameSimulation {
         (a, b) => a.arrivalTime - b.arrivalTime || a.id.localeCompare(b.id),
       );
     let arrivalIndex = 0;
-    while (arrivalIndex < arrivals.length) {
-      const arrivalTime = Math.max(
-        this.state.simulationTime,
-        arrivals[arrivalIndex].arrivalTime,
-      );
-      this.advanceProducersTo(arrivalTime);
-      this.advanceMarket(arrivalTime);
+    while (true) {
+      const arrivalTime =
+        arrivalIndex < arrivals.length
+          ? Math.max(
+              this.state.simulationTime,
+              arrivals[arrivalIndex].arrivalTime,
+            )
+          : Number.POSITIVE_INFINITY;
+      const consumptionTime =
+        this.state.foodConsumptionUpdatedAt +
+        populationPolicy.foodConsumptionPeriodMs;
+      const boundaryTime = Math.min(arrivalTime, consumptionTime);
+      if (boundaryTime > simulationTime) break;
+      this.advanceProducersTo(boundaryTime);
+      this.advanceMarket(boundaryTime);
       while (
         arrivalIndex < arrivals.length &&
         Math.max(
           this.state.simulationTime,
           arrivals[arrivalIndex].arrivalTime,
-        ) === arrivalTime
+        ) === boundaryTime
       ) {
         const shipment = arrivals[arrivalIndex++];
         this.state.warehouseInventory[shipment.cargo.commodity] +=
@@ -565,6 +616,16 @@ export class LocalGameSimulation {
             : candidate,
         );
       }
+      if (consumptionTime === boundaryTime) {
+        const result = consumeHouseholdFood(
+          this.state.warehouseInventory,
+          this.state.world.settlement?.population ?? 0,
+        );
+        this.state.warehouseInventory = { ...result.inventory };
+        this.state.lastFoodConsumption = result.consumption;
+        this.state.foodConsumptionUpdatedAt = boundaryTime;
+      }
+      this.state.simulationTime = boundaryTime;
     }
     this.advanceProducersTo(simulationTime);
     this.advanceMarket(simulationTime);
@@ -744,13 +805,11 @@ export class LocalGameSimulation {
         (candidate.buildingId === buildingId ? 0 : candidate.assignedWorkers),
       0,
     );
-    const workingAgePopulation = describePopulation(
-      this.state.world,
-      0,
-      this.state.warehouseInventory.food,
-    ).workingAgePopulation;
+    const workforce = workingAgePopulation(
+      this.state.world.settlement?.population ?? 0,
+    );
     const validation = validateLaborAssignment(
-      workingAgePopulation,
+      workforce,
       assignedElsewhere,
       workers,
       selected.requiredWorkers,
@@ -1056,11 +1115,8 @@ export class LocalGameSimulation {
         : null;
       return site ? [site] : [];
     });
-    const totalWorkforce = describePopulation(
-      this.state.world,
-      0,
-      this.state.warehouseInventory.food,
-    ).workingAgePopulation;
+    const totalPopulation = this.state.world.settlement?.population ?? 0;
+    const totalWorkforce = workingAgePopulation(totalPopulation);
     const labor = describeLabor(
       totalWorkforce,
       sites.map((site) => ({
@@ -1071,7 +1127,11 @@ export class LocalGameSimulation {
     const population = describePopulation(
       this.state.world,
       labor.assignedWorkers,
-      this.state.warehouseInventory.food,
+      describeFoodNeed(
+        this.state.warehouseInventory,
+        totalPopulation,
+        this.state.lastFoodConsumption,
+      ),
     );
     const listings = this.marketListings();
     return {

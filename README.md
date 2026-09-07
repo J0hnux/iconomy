@@ -241,6 +241,18 @@ For chart verification, open Market, select Crops, choose Candlestick and 1s, th
 
 For the terminal check, use the bottom Market action, search for Crops, switch to Candlestick and 1s, and leave the window open while simulation time advances. Search for Iron, choose Iron Ore or Iron Tools, browse Production Chains, follow a related-good link, then Expand. Close the analysis modal and confirm the terminal remains on the same commodity, timeframe, and chart type. Drag the terminal toward each edge and confirm it remains reachable.
 
+## Milestone 17: household consumption
+
+- Novagrad's aggregate population now consumes Food Value every 60 simulation seconds from the primary settlement Warehouse. Consumption stops while simulation time is paused and remains deterministic at 1×, 2×, 5×, across incremental reads, and across large time jumps.
+- One population policy defines demand and food efficiency: each citizen requires one Food Value per period; Crops provide 1, Basic Food 2, Cooked Meat 3, and Prepared Meal 4. Households consume higher-value foods first, so processed food supports the same demand with fewer physical units.
+- The consumption resolver reports Food Required, Food Available, Food Consumed, Food Supply %, and the actual commodities and units used during the latest completed period. A shortage is any period that supplies less than 100% of required Food Value.
+- Food is removed only from the existing primary Warehouse inventory. Goods stored at producers or moving in shipments are unavailable until they reach that warehouse. Consumption therefore competes with production inputs, player sales, and local reserves without introducing a second inventory.
+- Existing market listings read the reduced Warehouse inventory, so household demand naturally affects existing shortage states, scarcity prices, price observations, and charts on the normal market cadence. Pricing and OHLC rules remain unchanged.
+- Version 1 saves now include the last completed household-consumption result and its authoritative update time. Older version 1 saves load without retroactive consumption and begin their first period at the saved simulation time.
+- Population totals, workforce, housing, production recipes, individual citizens, money, health, starvation, migration, classes, and luxury needs remain unchanged.
+
+For consumption verification, note the Food Required and Food Available values, accelerate to 5×, and observe a completed period reduce edible Warehouse inventory. Main Food identifies what was eaten. Continue until Food Supply falls below 100%, then restore supply by producing and dispatching Crops, Basic Food, Cooked Meat, or Prepared Meals to the primary Warehouse.
+
 ## Run and verify
 
 ```bash

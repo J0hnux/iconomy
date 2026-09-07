@@ -11,6 +11,12 @@ const action =
   "rounded-md border border-white/10 bg-slate-700/40 px-3 py-2 text-xs text-slate-200 hover:bg-sky-800/50 focus-visible:outline-2 focus-visible:outline-sky-300 disabled:opacity-40";
 const currency = (cents: number) =>
   `$${(cents / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+const foodSources = (snapshot: ProductionSnapshot | null) =>
+  snapshot?.population.mainFoodSources.length
+    ? snapshot.population.mainFoodSources
+        .map((source) => `${source.name} ×${source.unitsConsumed}`)
+        .join(", ")
+    : "Awaiting period";
 
 export function PlayerHud({
   world,
@@ -76,7 +82,14 @@ export function PlayerHud({
             ["Available", snapshot?.labor.unassignedWorkers ?? "—"],
             ["Labor shortages", snapshot?.labor.shortageBuildings ?? "—"],
             ["Housing capacity", snapshot?.population.housingCapacity ?? "—"],
-            ["Food supply", snapshot?.population.foodSupply ?? "—"],
+            ["Food required", snapshot?.population.foodRequired ?? "—"],
+            ["Food available", snapshot?.population.foodAvailable ?? "—"],
+            ["Food consumed", snapshot?.population.foodConsumed ?? "—"],
+            [
+              "Food supply",
+              snapshot ? `${snapshot.population.foodSupplyPercent}%` : "—",
+            ],
+            ["Main food", foodSources(snapshot)],
           ].map(([label, value]) => (
             <div key={label} className="flex justify-between gap-2">
               <dt className="text-slate-400">{label}</dt>
@@ -286,7 +299,14 @@ export function BottomHud({
             ["Available", snapshot?.labor.unassignedWorkers ?? "—"],
             ["Labor shortages", snapshot?.labor.shortageBuildings ?? "—"],
             ["Housing capacity", snapshot?.population.housingCapacity ?? "—"],
-            ["Food supply", snapshot?.population.foodSupply ?? "—"],
+            ["Food required", snapshot?.population.foodRequired ?? "—"],
+            ["Food available", snapshot?.population.foodAvailable ?? "—"],
+            ["Food consumed", snapshot?.population.foodConsumed ?? "—"],
+            [
+              "Food supply",
+              snapshot ? `${snapshot.population.foodSupplyPercent}%` : "—",
+            ],
+            ["Main food", foodSources(snapshot)],
             [
               "Producing sites",
               snapshot
